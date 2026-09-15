@@ -96,8 +96,12 @@ class SimplePPOTrainer:
     - 课程学习：逐步增加订单数量和时间压力
     """
     
-    def __init__(self, initial_lr: float, total_train_episodes: int, steps_per_episode: int, training_targets: dict = None, models_root_dir: Optional[str] = None, logs_root_dir: Optional[str] = None):
+    def __init__(self, initial_lr: float, total_train_episodes: int, steps_per_episode: int, training_targets: dict = None, models_root_dir: Optional[str] = None, logs_root_dir: Optional[str] = None, env_config: Dict[str, Any] = None):
         self.timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+        # 场景配置（scenario='delivery' 时使用运力商圈配送环境）
+        self.env_config = dict(env_config) if env_config else {}
+        self.env_scenario = str(self.env_config.get('scenario', 'factory')).lower()
         
         
         # 使用配置文件的系统资源配置
@@ -111,7 +115,7 @@ class SimplePPOTrainer:
         
         # 环境探测
         # 之前的代码依赖动态配置，现在我们直接创建
-        temp_env = make_parallel_env()
+        temp_env = make_parallel_env(dict(self.env_config))
         self.state_dim = temp_env.observation_space(temp_env.possible_agents[0]).shape[0]
         # 直接使用环境的动作空间对象以支持 MultiDiscrete
         self.action_space = temp_env.action_space(temp_env.possible_agents[0])
@@ -178,8 +182,12 @@ class SimplePPOTrainer:
         self.best_score_dual_objective = float('-inf')
         self.best_episode_dual_objective = -1
 
-        # 训练流程由配置文件驱动
-        self.training_flow_config = TRAINING_FLOW_CONFIG
+        # 训练流程由配置文件驱动（delivery 场景使用配送两阶段配置）
+        if self.env_scenario == 'delivery':
+            from environments.delivery_config import DELIVERY_TRAINING_FLOW_CONFIG
+            self.training_flow_config = DELIVERY_TRAINING_FLOW_CONFIG
+        else:
+            self.training_flow_config = TRAINING_FLOW_CONFIG
         self.training_targets = self.training_flow_config["general_params"] # 通用参数
         
         # 自适应训练状态跟踪
@@ -286,11 +294,11 @@ class SimplePPOTrainer:
         # 10-23-18-00 核心改进：多任务混合机制贯穿两个阶段
         # 从foundation_phase和generalization_phase分别读取配置
         # 两阶段都使用25% BASE_ORDERS worker作为稳定锚点
-        self.foundation_multi_task_config = TRAINING_FLOW_CONFIG["foundation_phase"].get(
+        self.foundation_multi_task_config = self.training_flow_config["foundation_phase"].get(
             "multi_task_mixing",
             {"enabled": False, "base_worker_fraction": 0.0, "randomize_base_env": False},
         )
-        self.generalization_multi_task_config = TRAINING_FLOW_CONFIG["generalization_phase"].get(
+        self.generalization_multi_task_config = self.training_flow_config["generalization_phase"].get(
             "multi_task_mixing",
             {"enabled": False, "base_worker_fraction": 0.0, "randomize_base_env": False},
         )
@@ -418,6 +426,13 @@ class SimplePPOTrainer:
         return False
 
     def _get_base_parts_count(self) -> int:
+        # delivery 场景：基准基数 = 配送基础订单数（1 单 = 1 任务）
+        if self.env_scenario == 'delivery':
+            try:
+                from environments.delivery_config import DELIVERY_BASE_ORDERS
+                return int(len(DELIVERY_BASE_ORDERS))
+            except Exception:
+                return 0
         try:
             return int(sum(int(o.get('quantity', 0)) for o in (BASE_ORDERS or [])))
         except Exception:
@@ -452,11 +467,12 @@ class SimplePPOTrainer:
     
     def create_environment(self, curriculum_stage=None):
         """创建环境（支持课程学习）"""
-        config = {}
+        # 基础配置：注入 scenario 等环境级配置（delivery 时切换配送环境）
+        config = dict(self.env_config)
         
         # 🔧 V16：实现课程学习的环境配置
         # 核心重构：课程学习逻辑现在由 TRAINING_FLOW_CONFIG 控制
-        cl_config = self.training_flow_config["foundation_phase"]["curriculum_learning"]
+        cl_config = self.training_flow_config["foundation_phase"].get("curriculum_learning", {"enabled": False})
         if curriculum_stage is not None and cl_config["enabled"]:
             stages = cl_config["stages"]
             stage = stages[curriculum_stage] if curriculum_stage < len(stages) else stages[-1]
@@ -524,7 +540,50 @@ class SimplePPOTrainer:
             use_base_orders_this_episode = (episode_in_cycle == 0)
         
         # 生成本回合统一的订单配置
-        if use_base_orders_this_episode:
+        episode_upstream: Optional[Dict[str, Any]] = None
+        if self.env_scenario == 'delivery':
+            # 配送场景：订单字段结构不同（order_type/pickup/dropoff/...），必须使用配送生成器
+            episode_index = (self.total_steps // num_steps)
+            from environments.delivery_config import (
+                DELIVERY_BASE_ORDERS, generate_random_delivery_orders, RIDERS as _DELIVERY_RIDERS,
+            )
+            if use_base_orders_this_episode:
+                episode_orders = DELIVERY_BASE_ORDERS
+                episode_tag = "DELIVERY_BASE_ORDERS"
+            else:
+                # 随机配送订单（与工厂侧相同的确定性种子逻辑）
+                _py_state = random.getstate()
+                _np_state = np.random.get_state()
+                try:
+                    random.seed(self.seed + 10007 * episode_index)
+                    np.random.seed(self.seed + 20011 * episode_index)
+                    episode_orders = generate_random_delivery_orders()
+                finally:
+                    try:
+                        random.setstate(_py_state)
+                    except Exception:
+                        pass
+                    try:
+                        np.random.set_state(_np_state)
+                    except Exception:
+                        pass
+                episode_tag = "随机配送订单"
+
+            # 三层联调：上游（双塔+W&D）精排候选
+            # - 外部注入：env_config['upstream_candidates'] 直接传入真实/Mock 上游结果
+            # - mock 上游：env_config 指定 candidate_source='upstream' 且未注入时，
+            #   由本回合订单现算一份 mock 精排（真实上游接入后即可替换）
+            if self.env_config.get('upstream_candidates'):
+                episode_upstream = self.env_config['upstream_candidates']
+            elif str(self.env_config.get('candidate_source', '')).lower() == 'upstream':
+                from environments.delivery_config import generate_mock_upstream_candidates
+                episode_upstream = generate_mock_upstream_candidates(
+                    episode_orders, list(_DELIVERY_RIDERS.keys()),
+                    top_k=int(self.env_config.get('upstream_top_k', 10)),
+                    seed=int(self.seed + 33331 * episode_index),
+                )
+                episode_tag = f"{episode_tag}+上游精排候选"
+        elif use_base_orders_this_episode:
             # 本回合所有worker使用BASE_ORDERS
             episode_orders = BASE_ORDERS
             episode_tag = "BASE_ORDERS"
@@ -556,27 +615,37 @@ class SimplePPOTrainer:
         episode_equipment_failure_config: Dict[str, Any] = {}
         episode_emergency_orders_config: Dict[str, Any] = {}
         if self.generalization_phase_active:
-            # 阶段二：启用动态事件
-            dynamic_events = TRAINING_FLOW_CONFIG["generalization_phase"].get("dynamic_events", {})
-            episode_equipment_failure_enabled = dynamic_events.get("equipment_failure_enabled", False)
+            # 阶段二：启用动态事件（delivery 场景：骑手离线 = 设备故障）
+            dynamic_events = self.training_flow_config["generalization_phase"].get("dynamic_events", {})
+            episode_equipment_failure_enabled = dynamic_events.get(
+                "equipment_failure_enabled", dynamic_events.get("rider_offline_enabled", False))
             episode_emergency_orders_enabled = dynamic_events.get("emergency_orders_enabled", False)
 
             # 12-04 新增：从配置中采样本回合统一的动态事件参数
-            dynamic_ranges = TRAINING_FLOW_CONFIG["generalization_phase"].get("dynamic_event_ranges", {})
+            # （delivery 场景的默认值取配送配置，避免混入工厂口径）
+            dynamic_ranges = self.training_flow_config["generalization_phase"].get("dynamic_event_ranges", {})
+
+            if self.env_scenario == 'delivery':
+                from environments.delivery_config import RIDER_OFFLINE_CONFIG, EMERGENCY_DELIVERY_ORDERS
+                _failure_defaults = RIDER_OFFLINE_CONFIG
+                _emergency_defaults = EMERGENCY_DELIVERY_ORDERS
+            else:
+                _failure_defaults = EQUIPMENT_FAILURE
+                _emergency_defaults = EMERGENCY_ORDERS
 
             if episode_equipment_failure_enabled:
                 failure_ranges = dynamic_ranges.get("equipment_failure", {})
                 mtbf_min, mtbf_max = failure_ranges.get(
                     "mtbf_hours",
-                    (EQUIPMENT_FAILURE["mtbf_hours"], EQUIPMENT_FAILURE["mtbf_hours"]),
+                    (_failure_defaults["mtbf_hours"], _failure_defaults["mtbf_hours"]),
                 )
                 mttr_min, mttr_max = failure_ranges.get(
                     "mttr_minutes",
-                    (EQUIPMENT_FAILURE["mttr_minutes"], EQUIPMENT_FAILURE["mttr_minutes"]),
+                    (_failure_defaults["mttr_minutes"], _failure_defaults["mttr_minutes"]),
                 )
                 prob_min, prob_max = failure_ranges.get(
                     "failure_probability",
-                    (EQUIPMENT_FAILURE["failure_probability"], EQUIPMENT_FAILURE["failure_probability"]),
+                    (_failure_defaults["failure_probability"], _failure_defaults["failure_probability"]),
                 )
 
                 episode_equipment_failure_config = {
@@ -589,15 +658,15 @@ class SimplePPOTrainer:
                 emerg_ranges = dynamic_ranges.get("emergency_orders", {})
                 rate_min, rate_max = emerg_ranges.get(
                     "arrival_rate",
-                    (EMERGENCY_ORDERS["arrival_rate"], EMERGENCY_ORDERS["arrival_rate"]),
+                    (_emergency_defaults["arrival_rate"], _emergency_defaults["arrival_rate"]),
                 )
                 boost_min, boost_max = emerg_ranges.get(
                     "priority_boost",
-                    (EMERGENCY_ORDERS["priority_boost"], EMERGENCY_ORDERS["priority_boost"]),
+                    (_emergency_defaults["priority_boost"], _emergency_defaults["priority_boost"]),
                 )
                 due_min, due_max = emerg_ranges.get(
                     "due_date_reduction",
-                    (EMERGENCY_ORDERS["due_date_reduction"], EMERGENCY_ORDERS["due_date_reduction"]),
+                    (_emergency_defaults["due_date_reduction"], _emergency_defaults["due_date_reduction"]),
                 )
 
                 arrival_rate = float(np.random.uniform(rate_min, rate_max))
@@ -630,8 +699,17 @@ class SimplePPOTrainer:
                 #   - 保证训练稳定性和收敛性
                 
                 # 10-23-20-00 所有worker使用本回合统一的订单和动态事件配置
+                worker_curriculum_config['scenario'] = self.env_scenario
                 worker_curriculum_config['custom_orders'] = episode_orders
-                worker_curriculum_config['randomize_env'] = (episode_tag != "BASE_ORDERS")
+                worker_curriculum_config['randomize_env'] = (not use_base_orders_this_episode)
+                # 三层联调：向 worker 透传上游精排候选与相关口径
+                if episode_upstream is not None:
+                    worker_curriculum_config['candidate_source'] = 'upstream'
+                    worker_curriculum_config['upstream_candidates'] = episode_upstream
+                for _uk in ('candidate_source', 'upstream_candidates', 'upstream_config', 'upstream_order_by',
+                            'upstream_top_k'):
+                    if _uk in self.env_config and _uk not in worker_curriculum_config:
+                        worker_curriculum_config[_uk] = self.env_config[_uk]
                 worker_curriculum_config['equipment_failure_enabled'] = episode_equipment_failure_enabled
                 worker_curriculum_config['emergency_orders_enabled'] = episode_emergency_orders_enabled
                 if episode_equipment_failure_enabled and episode_equipment_failure_config:
@@ -766,6 +844,9 @@ class SimplePPOTrainer:
             self._last_episode_config = {
                 'custom_orders': episode_orders,
                 'episode_tag': episode_tag,
+                'candidate_source': ('upstream' if episode_upstream is not None
+                                     else str(self.env_config.get('candidate_source', 'endogenous'))),
+                'upstream_candidates': episode_upstream,
                 'equipment_failure_enabled': episode_equipment_failure_enabled,
                 'emergency_orders_enabled': episode_emergency_orders_enabled,
                 'equipment_failure_config': episode_equipment_failure_config,
@@ -828,6 +909,9 @@ class SimplePPOTrainer:
         self._last_episode_config = {
             'custom_orders': episode_orders,
             'episode_tag': episode_tag,
+            'candidate_source': ('upstream' if episode_upstream is not None
+                                 else str(self.env_config.get('candidate_source', 'endogenous'))),
+            'upstream_candidates': episode_upstream,
             'equipment_failure_enabled': episode_equipment_failure_enabled,
             'emergency_orders_enabled': episode_emergency_orders_enabled,
             'equipment_failure_config': episode_equipment_failure_config,
@@ -1012,6 +1096,15 @@ class SimplePPOTrainer:
             eval_config['custom_orders'] = last_config['custom_orders']
             eval_config['equipment_failure_enabled'] = last_config['equipment_failure_enabled']
             eval_config['emergency_orders_enabled'] = last_config['emergency_orders_enabled']
+            # 三层联调：评估环境与训练环境保持同一候选来源（含上游精排候选）
+            if last_config.get('candidate_source'):
+                eval_config['candidate_source'] = last_config['candidate_source']
+            if last_config.get('upstream_candidates'):
+                eval_config['upstream_candidates'] = last_config['upstream_candidates']
+            if self.env_config.get('upstream_config'):
+                eval_config['upstream_config'] = self.env_config['upstream_config']
+            if self.env_config.get('upstream_order_by'):
+                eval_config['upstream_order_by'] = self.env_config['upstream_order_by']
             # 保存订单标签供日志使用
             eval_config['episode_tag'] = last_config['episode_tag']
             # 同步本回合使用的动态事件参数，确保评估环境与训练环境一致
@@ -1022,6 +1115,7 @@ class SimplePPOTrainer:
         
         # 评估步长对齐环境超时
         eval_config['MAX_SIM_STEPS'] = self.max_steps_for_eval
+        eval_config['scenario'] = self.env_scenario
         eval_config = build_evaluation_config(eval_config, {'deterministic_candidates': True})
         
         env = make_parallel_env(eval_config)
@@ -1188,7 +1282,7 @@ class SimplePPOTrainer:
             self.training_targets["max_episodes"] = max_episodes
         
         # 🔧 V16：显示课程学习配置
-        curriculum_config = self.training_flow_config["foundation_phase"]["curriculum_learning"]
+        curriculum_config = self.training_flow_config["foundation_phase"].get("curriculum_learning", {"enabled": False, "stages": []})
         if curriculum_config.get("enabled", False):
             print(f"📚 课程学习已启用，共{len(curriculum_config['stages'])}个阶段:")
             for i, stage in enumerate(curriculum_config["stages"]):
@@ -1206,7 +1300,7 @@ class SimplePPOTrainer:
         print("=" * 80)
         
         # 🔧 V16：课程学习管理
-        curriculum_config = self.training_flow_config["foundation_phase"]["curriculum_learning"]
+        curriculum_config = self.training_flow_config["foundation_phase"].get("curriculum_learning", {"enabled": False, "stages": []})
         curriculum_enabled = curriculum_config.get("enabled", False)
         current_stage = 0
         stage_episode_count = 0
@@ -1354,9 +1448,13 @@ class SimplePPOTrainer:
                         # 10-23-18-00 新范式：信息显示调整（不再在这里生成random_orders）
                         # 动态事件状态由配置文件控制
                         generalization_criteria = self.training_flow_config["generalization_phase"]["completion_criteria"]
-                        dynamic_events = TRAINING_FLOW_CONFIG["generalization_phase"].get("dynamic_events", {})
-                        print(f"🎲 泛化强化阶段: 动态事件训练")
-                        print(f"   设备故障: {'✓' if dynamic_events.get('equipment_failure_enabled', False) else '✗'}")
+                        dynamic_events = self.training_flow_config["generalization_phase"].get("dynamic_events", {})
+                        if self.env_scenario == 'delivery':
+                            print(f"🎲 泛化强化阶段: 动态事件训练")
+                            print(f"   骑手离线: {'✓' if dynamic_events.get('rider_offline_enabled', False) else '✗'}")
+                        else:
+                            print(f"🎲 泛化强化阶段: 动态事件训练")
+                            print(f"   设备故障: {'✓' if dynamic_events.get('equipment_failure_enabled', False) else '✗'}")
                         print(f"   紧急插单: {'✓' if dynamic_events.get('emergency_orders_enabled', False) else '✗'}")
                         print(f"   泛化阶段连续达标: {self.generalization_achievement_count}/{generalization_criteria['target_consistency']} 次")
                 
@@ -1427,8 +1525,16 @@ class SimplePPOTrainer:
                         }
                         self.kpi_history.append(kpi_results)
 
-                # 🔧 核心改造：计算当前回合的综合评分
-                current_score = calculate_episode_score(kpi_results, config=current_curriculum_config)
+                # 🔧 核心改造：计算当前回合的综合评分（delivery 场景使用配送评分函数）
+                if self.env_scenario == 'delivery':
+                    from environments.delivery_config import calculate_delivery_episode_score
+                    # 分母对齐本回合实际订单（基础单/随机单单数不同，避免完成率失真）
+                    score_cfg = dict(current_curriculum_config) if current_curriculum_config else {}
+                    if getattr(self, '_last_episode_config', None) and self._last_episode_config.get('custom_orders'):
+                        score_cfg['custom_orders'] = self._last_episode_config['custom_orders']
+                    current_score = calculate_delivery_episode_score(kpi_results, config=score_cfg)
+                else:
+                    current_score = calculate_episode_score(kpi_results, config=current_curriculum_config)
                 
                 # 🔧 BUG修复：保存本回合的KPI结果，供下一回合的毕业检查使用
                 last_kpi_results = kpi_results
@@ -2101,6 +2207,17 @@ class SimplePPOTrainer:
 
     def _get_target_parts(self, curriculum_config: Optional[Dict]) -> int:
         """10-23-20-15 修复版：统一获取当前回合的目标零件数，优先使用实际训练配置"""
+        # delivery 场景：1 订单 = 1 配送任务，目标数 = 订单条数
+        if self.env_scenario == 'delivery':
+            from environments.delivery_config import get_total_orders_count
+            if hasattr(self, '_last_episode_config') and self._last_episode_config:
+                custom_orders = self._last_episode_config.get('custom_orders')
+                if custom_orders:
+                    return get_total_orders_count(custom_orders)
+            if curriculum_config and 'custom_orders' in curriculum_config:
+                return get_total_orders_count(curriculum_config['custom_orders'])
+            return get_total_orders_count()
+
         # 10-23-20-15 优先使用上一个训练回合的实际订单配置
         if hasattr(self, '_last_episode_config') and self._last_episode_config:
             custom_orders = self._last_episode_config.get('custom_orders')

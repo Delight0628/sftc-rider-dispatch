@@ -2179,7 +2179,12 @@ class WFactoryEnv(ParallelEnv):
 # =============================================================================
 
 def make_parallel_env(config: Dict[str, Any] = None):
-    """直接创建PettingZoo环境"""
+    """直接创建PettingZoo环境（统一环境工厂入口）
+
+    支持场景分发：
+    - 默认/ scenario='factory'：W工厂生产调度环境
+    - scenario='delivery'：运力商圈骑手派单调度环境（比赛场景）
+    """
     # 仅在主进程中显示环境创建日志，避免worker重复输出
     import os
     try:
@@ -2187,4 +2192,11 @@ def make_parallel_env(config: Dict[str, Any] = None):
         is_main_process = (_mp.current_process().name == 'MainProcess')
     except Exception:
         is_main_process = True
-    return WFactoryEnv(config) 
+
+    cfg = dict(config or {})
+    scenario = str(cfg.get('scenario', 'factory')).lower()
+    if scenario == 'delivery':
+        # 运力商圈配送调度（比赛场景），延迟导入避免循环依赖
+        from .delivery_env import make_parallel_delivery_env
+        return make_parallel_delivery_env(config)
+    return WFactoryEnv(config)

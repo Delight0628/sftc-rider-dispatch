@@ -126,7 +126,7 @@ def start_log_parser_watcher(log_file_path: str, cwd: str = None, poll_interval_
     t = threading.Thread(target=_worker, daemon=True)
     t.start()
 
-def monitor_and_launch(model_run_dir, main_dir_abs, folder_name, timeout_hours=24):
+def monitor_and_launch(model_run_dir, main_dir_abs, folder_name, timeout_hours=24, scenario="factory"):
     """
     监控模型目录，并为每个新生成的模型启动评估和调试脚本。
     """
@@ -189,7 +189,16 @@ def monitor_and_launch(model_run_dir, main_dir_abs, folder_name, timeout_hours=2
                 
                 model_path = all_models[model_file]  # 🔧 使用完整路径
                 base_name = model_file.replace('.keras', '')
-                
+
+                # 非工厂场景：evaluation.py / debug_marl_behavior.py 目前仅支持工厂场景，
+                # 强行启动会产出错误口径的对比数据，故跳过并明确提示（配送场景评估在下一阶段接入）
+                if str(scenario).lower() != "factory":
+                    print(f"ℹ️ 当前场景={scenario}：跳过工厂专用的 evaluation.py / debug_marl_behavior.py，"
+                          f"仅保留训练产物。", flush=True)
+                    processed_models.add(model_file)
+                    print("="*60, flush=True)
+                    continue
+
                 # 将日志文件和输出都指向这个新目录
                 eval_log = os.path.join(eval_dir, f'ev_{base_name}.log')
                 eval_cmd_list = [
@@ -270,6 +279,8 @@ def launch_background_process(args):
         f"\"{args.folder_name}\" "
         f"--internal-run "
         f"--main-dir \"{main_dir_name}\" "
+        f"--scenario {getattr(args, 'scenario', 'factory')} "
+        f"--candidate-source {getattr(args, 'candidate_source', 'endogenous')} "
         f"> \"{log_file_path}\" 2>&1 &"
     )
 
@@ -340,7 +351,9 @@ def run_background_tasks(args):
     train_cmd_list = [
         sys.executable, "-u", "mappo/ppo_marl_train.py",
         "--models-dir", models_dir,
-        "--logs-dir", logs_dir
+        "--logs-dir", logs_dir,
+        "--scenario", getattr(args, 'scenario', 'factory'),
+        "--candidate-source", getattr(args, 'candidate_source', 'endogenous'),
     ]
     launch_and_monitor_child(train_cmd_list, train_log, cwd=main_dir_abs)
     
@@ -351,7 +364,8 @@ def run_background_tasks(args):
 
     if model_run_dir:
         # 监控目录并启动其他脚本
-        monitor_and_launch(model_run_dir, main_dir_abs, folder_name)
+        monitor_and_launch(model_run_dir, main_dir_abs, folder_name,
+                           scenario=getattr(args, 'scenario', 'factory'))
     else:
         print("❌ 未能找到训练输出目录。正在中止监控。", flush=True)
         print(f"   请检查训练日志以获取错误信息: {train_log}", flush=True)
@@ -375,6 +389,14 @@ def main():
     )
     parser.add_argument(
         "--main-dir", type=str, help=argparse.SUPPRESS
+    )
+    parser.add_argument(
+        "--scenario", type=str, default="factory", choices=["factory", "delivery"],
+        help="训练场景：factory=工厂生产调度；delivery=运力商圈配送调度（比赛）"
+    )
+    parser.add_argument(
+        "--candidate-source", type=str, default="endogenous", choices=["endogenous", "upstream"],
+        help="配送场景候选来源：endogenous=环境自采样；upstream=上游（双塔+W&D）精排候选"
     )
     args = parser.parse_args()
 

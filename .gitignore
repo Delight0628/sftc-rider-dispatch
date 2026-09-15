@@ -10,6 +10,11 @@
 !.specstory/
 !app/
 
+# Delivery scenario (运力商圈比赛场景)
+!environments/delivery_env.py
+!environments/delivery_config.py
+!update.md
+
 # Python scripts
 !auto_train.py
 !advanced_optimization.py

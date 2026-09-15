@@ -60,36 +60,67 @@ def main():
     parser = argparse.ArgumentParser(description="MAPPO 训练入口")
     parser.add_argument("--models-dir", type=str, default=None, help="用于保存训练模型的根目录（由auto_train传入）")
     parser.add_argument("--logs-dir", type=str, default=None, help="用于保存TensorBoard日志的根目录（由auto_train传入）")
+    parser.add_argument("--scenario", type=str, default="factory", choices=["factory", "delivery"],
+                        help="训练场景：factory=工厂生产调度，delivery=运力商圈配送调度（比赛）")
+    parser.add_argument("--candidate-source", type=str, default="endogenous",
+                        choices=["endogenous", "upstream"],
+                        help="候选订单来源：endogenous=环境自采样；upstream=采用上游（双塔+W&D）精排候选"
+                             "（未注入真实上游时自动使用 mock 精排，用于三层联调）")
+    parser.add_argument("--upstream-order-by", type=str, default="urgency",
+                        choices=["urgency", "upstream"],
+                        help="上游候选用途口径：urgency=按时间紧迫性排序（会议口径，默认）；"
+                             "upstream=保持上游意愿序")
     cli_args, _ = parser.parse_known_args()
+    scenario = cli_args.scenario.lower()
+    candidate_source = cli_args.candidate_source.lower()
+    upstream_order_by = cli_args.upstream_order_by.lower()
+    if scenario != "delivery" and candidate_source == "upstream":
+        print("⚠️ --candidate-source=upstream 仅对 delivery 场景生效，已回退 endogenous")
+        candidate_source = "endogenous"
+
+    # 场景配置选择（delivery 使用运力商圈配送配置）
+    if scenario == "delivery":
+        from environments.delivery_config import (
+            DELIVERY_TRAINING_FLOW_CONFIG, DELIVERY_REWARD_CONFIG, RIDERS
+        )
+        flow_config = DELIVERY_TRAINING_FLOW_CONFIG
+        reward_config_for_print = DELIVERY_REWARD_CONFIG
+    else:
+        flow_config = TRAINING_FLOW_CONFIG
+        reward_config_for_print = REWARD_CONFIG
 
     # 设置随机种子
     random.seed(RANDOM_SEED)
     np.random.seed(RANDOM_SEED)
     tf.random.set_seed(RANDOM_SEED)
-    
+
     try:
         # 从配置文件获取训练参数
-        max_episodes = TRAINING_FLOW_CONFIG["general_params"]["max_episodes"]
-        steps_per_episode = TRAINING_FLOW_CONFIG["general_params"]["steps_per_episode"]
-        eval_frequency = TRAINING_FLOW_CONFIG["general_params"]["eval_frequency"]
-        
+        max_episodes = flow_config["general_params"]["max_episodes"]
+        steps_per_episode = flow_config["general_params"]["steps_per_episode"]
+        eval_frequency = flow_config["general_params"]["eval_frequency"]
+
         print("=" * 80)
-        foundation_criteria = TRAINING_FLOW_CONFIG["foundation_phase"]["graduation_criteria"]
-        generalization_criteria = TRAINING_FLOW_CONFIG["generalization_phase"]["completion_criteria"]
-        foundation_mixing = TRAINING_FLOW_CONFIG["foundation_phase"]["multi_task_mixing"]
-        generalization_mixing = TRAINING_FLOW_CONFIG["generalization_phase"]["multi_task_mixing"]
-        dynamic_events = TRAINING_FLOW_CONFIG["generalization_phase"].get("dynamic_events", {})
-        
+        print(f"🚚 场景: {scenario}" + ("（运力评估商圈智能体-比赛）" if scenario == "delivery" else "（W工厂生产调度）"))
+        foundation_criteria = flow_config["foundation_phase"]["graduation_criteria"]
+        generalization_criteria = flow_config["generalization_phase"]["completion_criteria"]
+        foundation_mixing = flow_config["foundation_phase"]["multi_task_mixing"]
+        generalization_mixing = flow_config["generalization_phase"]["multi_task_mixing"]
+        dynamic_events = flow_config["generalization_phase"].get("dynamic_events", {})
+
         print(f"\n📚阶段一：基础能力训练（随机订单泛化）")
-        print(f"   策略: 随机订单 + {int(foundation_mixing.get('base_worker_fraction', 0)*100)}% worker使用BASE_ORDERS")
+        print(f"   策略: 随机订单 + {int(foundation_mixing.get('base_worker_fraction', 0)*100)}% worker使用基础订单锚点")
         print(f"   目标: 综合评分 > {foundation_criteria['target_score']:.2f}, "
               f"完成率 > {foundation_criteria['min_completion_rate']:.0f}%, "
               f"延期 < {foundation_criteria['tardiness_threshold']:.0f}min, "
               f"连续{foundation_criteria['target_consistency']}次")
-        
+
         print(f"\n🚀阶段二：动态事件鲁棒性训练（动态事件鲁棒性）")
-        print(f"   策略: 随机订单 + 动态事件（设备故障{'✓' if dynamic_events.get('equipment_failure_enabled') else '✗'}、紧急插单{'✓' if dynamic_events.get('emergency_orders_enabled') else '✗'}）")
-        print(f"        + {int(generalization_mixing.get('base_worker_fraction', 0)*100)}% worker使用BASE_ORDERS")
+        if scenario == "delivery":
+            print(f"   策略: 随机订单 + 动态事件（骑手离线{'✓' if dynamic_events.get('rider_offline_enabled') else '✗'}、紧急订单{'✓' if dynamic_events.get('emergency_orders_enabled') else '✗'}）")
+        else:
+            print(f"   策略: 随机订单 + 动态事件（设备故障{'✓' if dynamic_events.get('equipment_failure_enabled') else '✗'}、紧急插单{'✓' if dynamic_events.get('emergency_orders_enabled') else '✗'}）")
+        print(f"        + {int(generalization_mixing.get('base_worker_fraction', 0)*100)}% worker使用基础订单锚点")
         print(f"   目标: 综合评分 > {generalization_criteria['target_score']:.2f}, "
               f"完成率 > {generalization_criteria['min_completion_rate']:.0f}%, "
               f"连续{generalization_criteria['target_consistency']}次")
@@ -97,30 +128,48 @@ def main():
         print(f"📊 轮数上限: {max_episodes}轮")
         print("=" * 80)
         print("🔧 核心配置:")
-        print("  工作站:")
-        for station, config in WORKSTATIONS.items():
-            print(f"    - {station}: 数量={config['count']}, 容量={config['capacity']}")
+        if scenario == "delivery":
+            print("  骑手:")
+            for rider, config in RIDERS.items():
+                print(f"    - {rider}: 携带上限={config['capacity']}, 速度={config['speed']}km/min")
+        else:
+            print("  工作站:")
+            for station, config in WORKSTATIONS.items():
+                print(f"    - {station}: 数量={config['count']}, 容量={config['capacity']}")
 
         print("  奖励系统:")
-        for key, value in REWARD_CONFIG.items():
+        for key, value in reward_config_for_print.items():
             print(f"    - {key}: {value}")
-        
-        cl_config = TRAINING_FLOW_CONFIG["foundation_phase"]["curriculum_learning"]
-        dynamic_events_cfg = TRAINING_FLOW_CONFIG["generalization_phase"].get("dynamic_events", {})
-        
+
+        cl_config = flow_config["foundation_phase"].get("curriculum_learning", {"enabled": False})
+        dynamic_events_cfg = flow_config["generalization_phase"].get("dynamic_events", {})
+
         print("  启用/禁用模块:")
         print(f"    - 课程学习: {'启用' if cl_config.get('enabled', False) else '禁用'}")
-        print(f"    - 设备故障: {'启用' if dynamic_events_cfg.get('equipment_failure_enabled', False) else '禁用'}")
+        if scenario == "delivery":
+            print(f"    - 骑手离线: {'启用' if dynamic_events_cfg.get('rider_offline_enabled', False) else '禁用'}")
+        else:
+            print(f"    - 设备故障: {'启用' if dynamic_events_cfg.get('equipment_failure_enabled', False) else '禁用'}")
         print(f"    - 紧急插单: {'启用' if dynamic_events_cfg.get('emergency_orders_enabled', False) else '禁用'}")
+        if scenario == "delivery":
+            if candidate_source == "upstream":
+                print(f"    - 候选来源: upstream（上游双塔+W&D 精排候选；未注入真实上游时用 mock 精排）")
+            else:
+                print(f"    - 候选来源: endogenous（环境自采样 EDD5+最近3+随机2）")
+            print(f"    - 候选用途口径: {upstream_order_by}"
+                  + ("（时间紧迫性优先，会议口径）" if upstream_order_by == "urgency" else "（保持上游意愿序）"))
         print("-" * 40)
-        
+
         trainer = SimplePPOTrainer(
             initial_lr=LEARNING_RATE_CONFIG["initial_lr"],
             total_train_episodes=max_episodes,
             steps_per_episode=steps_per_episode,
-            training_targets=None, 
+            training_targets=None,
             models_root_dir=cli_args.models_dir,
-            logs_root_dir=cli_args.logs_dir
+            logs_root_dir=cli_args.logs_dir,
+            env_config={'scenario': scenario,
+                        'candidate_source': candidate_source,
+                        'upstream_order_by': upstream_order_by}
         )
         
         # 启动自适应训练：系统将根据性能自动决定何时停止
@@ -134,11 +183,17 @@ def main():
         if results:
             print("\n🎉 自适应训练成功完成！")
             print(f"📊 实际训练轮数: {len(trainer.iteration_times)}")
-            final_completion_rate = (results['best_kpi'].get('mean_completed_parts', 0) / get_total_parts_count()) * 100 if get_total_parts_count() > 0 else 0
+            if scenario == "delivery":
+                total_target = trainer._get_target_parts(None)
+                unit_label = "单"
+            else:
+                total_target = get_total_parts_count()
+                unit_label = "个零件"
+            final_completion_rate = (results['best_kpi'].get('mean_completed_parts', 0) / total_target) * 100 if total_target > 0 else 0
             print(f"🎯 最终目标达成: {trainer.adaptive_state['target_achieved_count']}次连续达标 (基于最终阶段分数)")
-            
+
             best_episode_final = trainer.best_episode_dual_objective if trainer.best_episode_dual_objective != -1 else trainer.final_stage_best_episode
-            print(f"📈 历史最佳性能 (双重标准，第 {best_episode_final} 回合): {final_completion_rate:.1f}% ({results['best_kpi'].get('mean_completed_parts', 0):.1f}个零件)")
+            print(f"📈 历史最佳性能 (双重标准，第 {best_episode_final} 回合): {final_completion_rate:.1f}% ({results['best_kpi'].get('mean_completed_parts', 0):.1f}{unit_label})")
         else:
             print("\n❌ 训练失败")
             
