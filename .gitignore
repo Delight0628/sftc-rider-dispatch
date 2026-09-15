@@ -7,48 +7,26 @@
 # Directories
 !environments/
 !mappo/
-!.specstory/
-!app/
 
-# Delivery scenario (运力商圈比赛场景)
+# Delivery scenario
 !environments/delivery_env.py
 !environments/delivery_config.py
+!environments/__init__.py
 !update.md
 
 # Python scripts
 !auto_train.py
-!advanced_optimization.py
-!debug_marl_behavior.py
-!evaluation.py
-!log_parser.py
-!plotting.py
-!app_scheduler.py
 
-# MARL模块化脚本 (新拆分)
+# MARL 模块
 !mappo/ppo_buffer.py
 !mappo/ppo_network.py
 !mappo/ppo_worker.py
 !mappo/ppo_trainer.py
 !mappo/ppo_marl_train.py
-!mappo/ppo_marl_train_whole.py
 !mappo/sampling_utils.py
+
 # Documentation
 !README.md
-!rule.mdc
-!DEPLOY.md
-!DEPLOYMENT_CHECKLIST.md
 
 # Dependencies
 !requirements.txt
-!app/app_requirements.txt
-
-# Streamlit configuration
-!.streamlit/
-!.streamlit/config.toml
-!.streamlit/secrets.toml.example
-
-# Important: Ignore actual secrets
-.streamlit/secrets.toml
-
-!outline.md
-!mermaid.txt
