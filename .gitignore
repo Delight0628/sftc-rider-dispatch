@@ -1,0 +1,39 @@
+# 忽略所有文件
+*
+
+# 但不忽略这些文件
+!.gitignore
+
+# Directories
+!environments/
+!mappo/
+
+# Delivery scenario
+!environments/delivery_env.py
+!environments/delivery_config.py
+!environments/__init__.py
+!update.md
+
+# Verification scripts
+!checks/
+!checks/delivery_logic_check.py
+!checks/delivery_upstream_check.py
+!checks/dispatch_integration_check.py
+
+# Python scripts
+!auto_train.py
+!evaluation_delivery.py
+
+# MARL 模块
+!mappo/ppo_buffer.py
+!mappo/ppo_network.py
+!mappo/ppo_worker.py
+!mappo/ppo_trainer.py
+!mappo/ppo_marl_train.py
+!mappo/sampling_utils.py
+
+# Documentation
+!README.md
+
+# Dependencies
+!requirements.txt
