@@ -11,6 +11,8 @@
 # Delivery scenario
 !environments/delivery_env.py
 !environments/delivery_config.py
+!environments/real_data_schema.py
+!environments/real_data_loader.py
 !environments/__init__.py
 !update.md
 
@@ -19,6 +21,14 @@
 !checks/delivery_logic_check.py
 !checks/delivery_upstream_check.py
 !checks/dispatch_integration_check.py
+!checks/real_data_schema_check.py
+!checks/make_realistic_sample.py
+
+# Schema field maps from DingTalk (no PII samples)
+!data/
+!data/schema/
+!data/schema/dwd_fact_order_whole_字段中文对照.txt
+!data/schema/dim_rider_single_字段中文对照.txt
 
 # Python scripts
 !auto_train.py

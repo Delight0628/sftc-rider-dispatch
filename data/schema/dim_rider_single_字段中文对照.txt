@@ -1,0 +1,74 @@
+dw.dim_rider_single（骑士主题-只包含每个ucode下“在职”的rider_id）全字段中文对照
+Owner: 杨宋建(tc013058) | 层级: DIM | 分区表
+================================================================================
+ucode	string	工号/同城ID
+main_id	bigint	配送员主账号ID
+rider_id	bigint	配送员子账户ID/骑士ID
+account_id	bigint	结算账户ID
+sf_ucode	string	大网业务ID
+open_id	string	顺手付openid
+sff_id	string	顺手付id
+pass_uid	string	sfpass uid
+bind_phone	string	手机号（加密）
+email	string	邮箱（加密）
+chinesename	string	中文名
+gender	string	性别
+area	string	大区
+prov	string	地区
+super_city_id	string	大城市ID
+super_city	string	大城市名
+cityid	bigint	城市ID
+city	string	城市名
+lc_id	bigint	所属lc/资源配送中心ID
+lc_name	string	资源配送中心名
+station_id	bigint	资源站点
+supplier_id	bigint	所属供应商
+sf_site_code	string	网点代码
+approve_time	bigint	审核通过时间
+leave_time	bigint	更新时间
+drive_expire	bigint	交通工具过期时间
+create_time	bigint	创建时间
+update_time	bigint	更新时间
+register_time	bigint	注册时间
+first_finish_time	bigint	首次完单时间
+work_type	bigint	工作性质/骑士类型
+level	int	骑士等级
+account_status	int	用户状态(在/离职)
+approve_status	bigint	用户审核状态
+hire_type	string	用工类型
+work_status	int	岗位状态
+register_status	int	状态 1-初始注册待完善信息,2-已完善
+block_cycle_time	int	拉黑周期 0无 1一天 2两天 3三天 9永久
+block_source	int	拉黑来源 1手动 2客诉 3人脸识别
+change_phone_status	int	换绑手机审核状态 0无换绑 1待审核 2审核通过 3审核驳回
+extra_flag	bigint	骑士标签/距离偏好 0普通骑士 1先锋骑士 4096冲锋骑士 32组织化-短距离 64组织化-中距离 128组织化-长距离
+rider_flag	bigint	配送员属性
+address	string	意向工作地点
+channel_id	bigint	渠道id
+health_card	string	健康证（加密）
+health_card_date	int	健康证到期日期
+health_card_status	int	健康证审核状态
+idcredit	string	身份证号（加密）
+idcredit_status	int	身份证审核状态
+rider_credit	int	骑士信用额度
+rider_deposit	bigint	骑士保证金余额
+type_flag	int	用户类型
+user_flag	bigint	用户属性
+status	bigint	用户状态(1,2)
+username	string	用户名
+vehicle_status	int	交通工具审核状态 1待确认 2待上传 3待审核 4审核通过 5审核不通过
+vehicle_type	bigint	交通工具类型
+register_source	int	注册来源
+lc_type	int	是否测试配送中心
+first_order_id	bigint	首次完单订单id
+remark	string	备注
+order_limit_info	string	订单限制相关信息
+rider_extra_info	string	扩展信息
+register_extra_info	string	扩展信息
+account_extra_info	string	其它信息,json串
+xc_area	string	XC战区
+first_register_time	string	骑士首次注册时间
+team_id	bigint	小队id
+transport_type	bigint	小队网络类型 1组织送 0非组织送
+rider_sex	string	骑士性别(F女,M男)
+date_of_birth	string	出生年月日

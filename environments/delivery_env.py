@@ -157,12 +157,22 @@ class DeliverySim:
         self._max_sim_time = float(self.config.get('MAX_SIM_TIME', self._simulation_time * mult))
 
         self._geo = dict(DELIVERY_GEO_CONFIG)
+        _geo_c = self.config.get('geo_config') or {}
+        if isinstance(_geo_c, dict):
+            self._geo.update(_geo_c)
         self._obs_cfg = dict(DELIVERY_OBS_CONFIG)
         self._reward_cfg = dict(DELIVERY_REWARD_CONFIG)
 
+        # 骑手配置：默认模块 RIDERS；真实数据可经 config['riders'] 注入
+        # （网络 146 维假设 5 骑手 one-hot，注入时请保持 5 名）
+        self._riders_cfg = dict(RIDERS)
+        _riders_c = self.config.get('riders')
+        if isinstance(_riders_c, dict) and _riders_c:
+            self._riders_cfg = {str(k): dict(v) for k, v in _riders_c.items()}
+
         # 智能体 = 骑手（与工厂 5 工作站对齐）
-        self.agents = [f"agent_{name}" for name in RIDERS.keys()]
-        self.rider_names = list(RIDERS.keys())
+        self.agents = [f"agent_{name}" for name in self._riders_cfg.keys()]
+        self.rider_names = list(self._riders_cfg.keys())
 
         # 动态事件（兼容工厂键名）
         self._rider_offline_enabled = bool(self.config.get('rider_offline_enabled', False)) or \
@@ -248,7 +258,7 @@ class DeliverySim:
         self.gantt_chart_history = []
 
         # ---- 骑手 ----
-        for name, rcfg in RIDERS.items():
+        for name, rcfg in self._riders_cfg.items():
             rider = RiderState(name, rcfg)
             if self._randomize_env:
                 jit = DELIVERY_RIDER_RANDOMIZATION
@@ -955,18 +965,24 @@ class DeliverySim:
             'total_orders': int(total),
             'total_tardiness': float(self.stats.get('total_tardiness', 0.0)),
             'max_tardiness': float(self.stats.get('max_tardiness', 0.0)),
+            'avg_tardiness': float(self.stats.get('total_tardiness', 0.0) / delivered) if delivered > 0 else 0.0,
             'mean_utilization': mean_util,
             'equipment_utilization': rider_utils,
             'on_time_rate': (on_time / delivered) if delivered > 0 else 0.0,
             'on_time_count': int(on_time),
             'avg_delivery_time': float(np.mean(delivery_times)) if delivery_times else 0.0,
             'total_distance': float(self.stats.get('total_distance', 0.0)),
+            'distance_per_order': (float(self.stats.get('total_distance', 0.0)) / delivered) if delivered > 0 else 0.0,
             'completion_rate': (delivered / total) if total > 0 else 0.0,
             'undelivered_count': int(total - delivered),
             'idle_when_work_available_count': int(self.stats.get('idle_when_work_available_count', 0)),
             'invalid_action_count': int(self.stats.get('invalid_action_count', 0)),
             'race_conflict_count': int(self.stats.get('race_conflict_count', 0)),
             'emergency_orders_inserted_count': int(self.stats.get('emergency_orders_inserted_count', 0)),
+            # 超时分桶（对齐数仓 ol_fin_late_* 口径）
+            'late_gt_5m_rate': 0.0,
+            'late_gt_15m_rate': 0.0,
+            'late_gt_30m_rate': 0.0,
             # 三层联调（上游精排候选）口径与兑现情况
             'candidate_source': self._candidate_source,
             'upstream_order_by': self._upstream_order_by,
@@ -978,6 +994,21 @@ class DeliverySim:
             'gantt_chart_history': self.gantt_chart_history,
             'event_timeline': list(self.event_timeline),
         }
+        if delivered > 0:
+            late5 = late15 = late30 = 0
+            for o in self.delivered:
+                if o.actual_deliver_time is None:
+                    continue
+                late = max(0.0, o.actual_deliver_time - o.due_date)
+                if late > 5:
+                    late5 += 1
+                if late > 15:
+                    late15 += 1
+                if late > 30:
+                    late30 += 1
+            result['late_gt_5m_rate'] = late5 / delivered
+            result['late_gt_15m_rate'] = late15 / delivered
+            result['late_gt_30m_rate'] = late30 / delivered
         return result
 
     # 兼容工厂训练器对 env.sim 的个别探测
@@ -1008,7 +1039,7 @@ class DeliveryEnv(ParallelEnv):
 
         self._setup_spaces()
 
-        global_state_dim = 1 + 2 + len(RIDERS) * 3 + 1
+        global_state_dim = 1 + 2 + len(self.sim.rider_names) * 3 + 1
         self.global_state_space = gym.spaces.Box(low=-np.inf, high=np.inf,
                                                  shape=(global_state_dim,), dtype=np.float32)
 
@@ -1036,7 +1067,7 @@ class DeliveryEnv(ParallelEnv):
                 'total_remaining_time_norm': DELIVERY_OBS_CONFIG.get('total_remaining_time_norm', 120.0),
                 'slack_time_norm': DELIVERY_OBS_CONFIG.get('slack_time_norm', 120.0),
             },
-            'num_stations': len(RIDERS),
+            'num_stations': len(self.sim.rider_names),
             'multi_discrete_num_heads': getattr(self, '_multi_discrete_num_heads', None),
             'multi_discrete_action_dim': getattr(self, '_multi_discrete_action_dim', None),
             'multi_discrete_heads_equal_dim': True,
@@ -1069,7 +1100,7 @@ class DeliveryEnv(ParallelEnv):
             for agent in self.agents
         }
         action_size = 1 + int(self.sim._obs_cfg.get("num_candidate_orders", 10))
-        max_heads = max(1, max(int(v.get("count", 1)) for v in RIDERS.values()))
+        max_heads = max(1, max(int(v.get("count", 1)) for v in self.sim._riders_cfg.values()))
         self._multi_discrete_num_heads = max_heads
         self._multi_discrete_action_dim = action_size
         self._action_spaces = {

@@ -97,13 +97,29 @@ def run_episode(env: DeliveryEnv, baseline: str, rng: np.random.RandomState,
 def evaluate_baseline(baseline: str, episodes: int = 5, seed: int = 0,
                       candidate_source: str = "endogenous",
                       upstream_order_by: str = "urgency",
-                      use_fixed_orders: bool = True) -> Dict:
+                      use_fixed_orders: bool = True,
+                      real_order_path: str = "",
+                      real_rider_path: str = "") -> Dict:
     rng = np.random.RandomState(seed)
     rows: List[Dict] = []
     for ep in range(episodes):
         ep_seed = seed + ep
         np.random.seed(ep_seed)
-        if use_fixed_orders:
+        if real_order_path:
+            from environments.real_data_loader import load_real_episode_config
+            cfg = load_real_episode_config(
+                real_order_path,
+                rider_path=real_rider_path or None,
+                max_orders=60,
+            )
+            cfg.update({
+                "candidate_source": candidate_source,
+                "upstream_order_by": upstream_order_by,
+            })
+            if candidate_source == "upstream":
+                cfg["upstream_candidates"] = generate_mock_upstream_candidates(
+                    cfg.get("custom_orders") or [], RIDER_NAMES, top_k=10, seed=ep_seed)
+        elif use_fixed_orders:
             orders = generate_random_delivery_orders()
             for i, o in enumerate(orders):
                 o.setdefault("order_id", i)
@@ -141,14 +157,22 @@ def evaluate_baseline(baseline: str, episodes: int = 5, seed: int = 0,
         "episodes": episodes,
         "candidate_source": candidate_source,
         "upstream_order_by": upstream_order_by,
+        # 主指标
         "completion_rate": _mean("completion_rate"),
         "on_time_rate": _mean("on_time_rate"),
-        "total_parts": _mean("total_parts"),
-        "total_orders": _mean("total_orders"),
         "total_tardiness": _mean("total_tardiness"),
+        "avg_tardiness": _mean("avg_tardiness"),
+        # 效率
         "makespan": _mean("makespan"),
         "mean_utilization": _mean("mean_utilization"),
+        "distance_per_order": _mean("distance_per_order"),
+        # 超时分桶（对齐 ol_fin_late_*）
+        "late_gt_5m_rate": _mean("late_gt_5m_rate"),
+        "late_gt_15m_rate": _mean("late_gt_15m_rate"),
+        "late_gt_30m_rate": _mean("late_gt_30m_rate"),
         "episode_score": _mean("episode_score"),
+        "total_parts": _mean("total_parts"),
+        "total_orders": _mean("total_orders"),
         "upstream_matched_count": _mean("upstream_matched_count"),
         "upstream_fallback_count": _mean("upstream_fallback_count"),
     }
@@ -181,13 +205,18 @@ def main():
                         help="可选：汇总结果写入 JSON 文件")
     parser.add_argument("--model", type=str, default="",
                         help="可选：模型权重路径（需 TF）")
+    parser.add_argument("--real-orders", type=str, default="",
+                        help="可选：dwd_fact_order_whole 导出样本 CSV/JSON 路径")
+    parser.add_argument("--real-riders", type=str, default="",
+                        help="可选：dim_rider_single 导出样本路径")
     args = parser.parse_args()
 
     baselines = ["idle", "fifo", "nearest", "edd", "random"] if args.baseline == "all" else [args.baseline]
     results = []
     print("=" * 72)
-    print(f"配送启发式基线 | source={args.candidate_source} order_by={args.upstream_order_by} "
-          f"episodes={args.episodes}")
+    src = "real" if args.real_orders else "mock"
+    print(f"配送启发式基线 | data={src} source={args.candidate_source} "
+          f"order_by={args.upstream_order_by} episodes={args.episodes}")
     print("=" * 72)
     for b in baselines:
         print(f"\n>>> baseline={b}")
@@ -195,22 +224,28 @@ def main():
             b, episodes=args.episodes, seed=args.seed,
             candidate_source=args.candidate_source,
             upstream_order_by=args.upstream_order_by,
+            real_order_path=args.real_orders,
+            real_rider_path=args.real_riders,
         )
         results.append(s)
         print(f"  completion={s['completion_rate']:.3f}  on_time={s['on_time_rate']:.3f}  "
-              f"tardiness={s['total_tardiness']:.1f}  makespan={s['makespan']:.1f}  "
-              f"util={s['mean_utilization']:.3f}  score={s['episode_score']:.3f}")
+              f"tardiness={s['total_tardiness']:.1f}  late15={s['late_gt_15m_rate']:.3f}  "
+              f"span={s['makespan']:.1f}  km/order={s['distance_per_order']:.2f}  "
+              f"score={s['episode_score']:.3f}")
 
     if args.model:
         try_model_baseline(args.model, episodes=args.episodes, seed=args.seed)
 
-    print("\n" + "=" * 72)
-    print(f"{'baseline':10s} {'compl':>7s} {'ontime':>7s} {'tardy':>8s} {'span':>8s} {'util':>7s} {'score':>7s}")
+    print("\n" + "=" * 78)
+    print(f"{'baseline':10s} {'compl':>7s} {'ontime':>7s} {'tardy':>8s} {'L15':>6s} "
+          f"{'span':>8s} {'util':>6s} {'km/o':>6s} {'score':>7s}")
     for s in results:
         print(f"{s['baseline']:10s} {s['completion_rate']:7.3f} {s['on_time_rate']:7.3f} "
-              f"{s['total_tardiness']:8.1f} {s['makespan']:8.1f} {s['mean_utilization']:7.3f} "
-              f"{s['episode_score']:7.3f}")
-    print("=" * 72)
+              f"{s['total_tardiness']:8.1f} {s['late_gt_15m_rate']:6.3f} "
+              f"{s['makespan']:8.1f} {s['mean_utilization']:6.3f} "
+              f"{s['distance_per_order']:6.2f} {s['episode_score']:7.3f}")
+    print("=" * 78)
+    print("KPI 口径见 environments/real_data_schema.KPI_SPEC（主指标/诊断/效率/业务）")
 
     if args.json_out:
         Path(args.json_out).write_text(json.dumps(results, ensure_ascii=False, indent=2),

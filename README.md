@@ -70,6 +70,8 @@ rider-dispatch-mappo/
 ├── environments/
 │   ├── delivery_config.py      # 配送配置：骑手/地理/订单生成/奖励/上游接口
 │   ├── delivery_env.py         # 配送仿真环境：DeliverySim + DeliveryEnv
+│   ├── real_data_schema.py     # 真实数仓字段映射 + 调度 KPI 筛选
+│   ├── real_data_loader.py     # 订单/骑士样本 → custom_orders
 │   ├── w_factory_env.py        # 环境工厂（场景分发入口）
 │   └── w_factory_config.py     # 共享基础配置
 ├── mappo/
@@ -113,6 +115,12 @@ python checks/dispatch_integration_check.py
 # 启发式基线对比（idle/fifo/nearest/edd/random）
 python evaluation_delivery.py --baseline all --episodes 5
 python evaluation_delivery.py --baseline all --episodes 5 --candidate-source upstream
+
+# 真实样本（业务方导出或本地同构样本）
+python checks/make_realistic_sample.py --out data/samples
+python evaluation_delivery.py --baseline edd --episodes 3 \
+  --real-orders data/samples/sample_orders.csv --real-riders data/samples/sample_riders.csv
+python checks/real_data_schema_check.py
 ```
 
 ## License

@@ -65,8 +65,12 @@
 | 文件 | 说明 |
 |---|---|
 | `environments/delivery_config.py` | 骑手/地理/订单生成/奖励/评分 + 上游契约与 mock |
-| `environments/delivery_env.py` | DeliverySim + DeliveryEnv（事件驱动，146 维观测） |
-| `evaluation_delivery.py` | **第 4 次新增**：配送启发式基线评估 |
+| `environments/delivery_env.py` | DeliverySim + DeliveryEnv（事件驱动，146 维观测；支持 riders/geo 注入） |
+| `environments/real_data_schema.py` | **第 5 次**：真实表字段映射 + KPI 筛选 |
+| `environments/real_data_loader.py` | **第 5 次**：样本 → custom_orders/riders |
+| `evaluation_delivery.py` | 配送启发式基线评估（支持真实样本） |
+| `checks/real_data_schema_check.py` | **第 5 次**：真实数据链路 24/24 |
+| `data/schema/*字段中文对照.txt` | 群内导出的 833/71 字段对照 |
 | `update.md` / `README.md` | 进度与说明 |
 
 ## 4. 改造设计（骑手派单调度）
@@ -118,6 +122,71 @@
 | 真实双塔/W&D 上游接入 | 替换 mock（契约已固定） | ⏳ 等业务方口径 |
 
 ## 5. 进度记录（倒序）
+
+### 2026-09-17（第 5 次对话）—— 群消息数据源对齐 + 特征/KPI 筛选
+
+**一、钉钉群「顶尖算法团队」要点（2026-09-17 14:37–15:00）**
+
+| 谁 | 说了什么 |
+|---|---|
+| 王新春 | 有绝大部分库表权限；关心「骑士维标签 + 订单维标签」；最终要看**调度效果** |
+| 王新春 | `dts.dwd_fact_order_whole` 订单明细宽表 **833 字段**，月级上亿行，分区 edt/emn；**需特征工程** |
+| 王新春 | `dw.dim_rider_single` 骑士维表 **71 字段**（在职 rider）；**两表覆盖 80%+ 需求**，可作算法训练数据源 |
+| 机器人 | 两表当前账号 **无查询权限**（权限曾被收回）；字段对照已导出 |
+| 高国兴 | 「感觉很全」「得看咱们最终实现的调度效果啥样」 |
+
+字段对照已落盘：`data/schema/dwd_fact_order_whole_字段中文对照.txt`、`data/schema/dim_rider_single_字段中文对照.txt`。
+
+**二、想要实现的效果（独立梳理）**
+
+1. **告别纯 mock**：用真实订单时空分布（取送坐标、推单/承诺时刻、重量）+ 骑士标签，构造可训练 episode  
+2. **特征工程收敛**：833+71 → 可入模的订单塔/骑手塔/W&D/MAPPO 特征，避免字段爆炸与标签泄漏  
+3. **调度效果可度量**：主讲准时/完成/超时，诊断接起/到店/配送时长，效率看利用率与单均里程  
+4. **三层联调闭环**：真实样本 → custom_orders；上游意愿分仍走既有契约（可 mock 或双塔输出）  
+5. **权限就绪后可替换**：当前账号无表权限 → 先用同构样本联调，业务方导数后一键切换  
+
+**三、本次改造**
+
+| 新增/改动 | 说明 |
+|---|---|
+| `environments/real_data_schema.py` | 订单/骑士核心字段映射、双塔特征清单、**KPI_SPEC 分层筛选**、路演主表 |
+| `environments/real_data_loader.py` | CSV/JSON → custom_orders + riders；经纬度投影；epoch→分钟；离线 KPI |
+| `delivery_env.py` | 支持 `config['riders']` / `geo_config` 注入；final_stats 增加 distance_per_order / avg_tardiness / late_* 分桶 |
+| `evaluation_delivery.py` | `--real-orders/--real-riders`；输出主指标+超时分桶+单均里程 |
+| `checks/real_data_schema_check.py` | **24/24 通过** |
+| `checks/make_realistic_sample.py` | 生成贴近宽表列名的本地样本（无库权限联调） |
+
+**四、调度 KPI 筛选（从 833 字段收敛）**
+
+| 层级 | 指标 | 为何留下 |
+|---|---|---|
+| **主指标（路演）** | 完成率 / 准时率 / 总超时分钟 | 会议核心是时间关系；客户与运力双视角 |
+| **效率** | makespan / 骑手利用率 / 单均里程 | 批次清空与路径是否绕路 |
+| **诊断** | 超时>5/15/30 分桶、接起/到店/配送时长、接单超时率 | 指导奖励塑形与 badcase |
+| **业务代理** | 单均骑士计提、超时赔付率 | Demo 可讲「调度 vs 收益/成本」 |
+| **刻意不进主表** | 金额细项、营销、渠道枚举等数百列 | 与调度决策弱相关，易过拟合 |
+
+离线标注字段：`is_timeliness` / `ol_fin_late_*` / `confirm_order_duration_minutes` / `arrive_shop_duration_minutes` / `distribution_duration_minutes` / `trade_amount` / `distance_km`。
+
+**五、验证**
+
+```bash
+set PYTHONPATH=D:\rider-dispatch-mappo
+python checks/real_data_schema_check.py          # 24/24
+python checks/make_realistic_sample.py --out data/samples
+python evaluation_delivery.py --baseline edd --episodes 2 \
+  --real-orders data/samples/sample_orders.csv --real-riders data/samples/sample_riders.csv
+python checks/delivery_logic_check.py            # 31/31 回归
+```
+
+样本试跑（edd，2 episode）：completion=1.0，on_time≈0.28，late15≈0.38，km/order≈6.0。
+
+**六、待业务方**
+
+- [ ] 恢复/开通 `dts.dwd_fact_order_whole`、`dw.dim_rider_single` 查询权限  
+- [ ] 导出**单商圈单日**小样本（避免月级全表）：订单核心列 + 骑士维表  
+- [ ] 确认 due 业务口径优先用 `loc_assessment_time` 还是 `latest_delivery_time`  
+- [ ] 如有曝光日志，补双塔硬负样本（`expose_time` 有值且未 confirm）
 
 ### 2026-09-15（第 4 次对话）—— 听记复核 + 证据链重建 + 配送基线
 
@@ -178,15 +247,19 @@
 - [ ] 用 `evaluation_delivery.py` 出 MAPPO vs 启发式对比表（需训练好的权重；模型加载入口已预留）
 - [ ] 增强基线：全局最近骑手指派 / 插入启发式，避免贪心首候选塌缩
 - [ ] 与业务方对齐真实数据字段，替换 `generate_mock_upstream_candidates`
+- [ ] 业务方导出单商圈单日样本后，用 `real_data_loader` 替换随机订单做 A/B
+- [ ] 双塔硬负样本：待曝光日志字段确认
 - [ ] upstream vs endogenous A/B（验证「上游精排 + 紧迫调度」）
 - [ ] 算力平台选型与租赁
 - [ ] 10-14 模板文档：三层架构 + 本仓库定位 + 演示截图
 - [ ] Demo：骑手派单可视化（甘特图/地图）+ 智能体包装（LLM + 提示词调用模型）
 - [ ] 风险：MAPPO 超参需按配送场景重调；收敛时间待实测
 - [ ] 风险：候选 [1] 位语义变更后，旧配送权重需重训或短程微调（工厂权重不受影响）
+- [x] 真实表字段映射与导入接口（第 5 次）
+- [x] 调度 KPI 分层筛选并写入评估输出（第 5 次）
 - [x] 校验脚本可复现（第 4 次重建）
 - [x] 配送启发式基线脚本（第 4 次新增）
-- [x] `.gitignore` 白名单含 `evaluation_delivery.py`
+- [x] `.gitignore` 白名单含 `evaluation_delivery.py` / real_data_* / checks
 
 ## 7. 逻辑校准明细（第 2 次对话，供回溯）
 
