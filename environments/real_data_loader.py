@@ -66,27 +66,50 @@ def _epoch_min(v: Any) -> Optional[float]:
 
 
 def load_rows(path: str | Path, max_rows: Optional[int] = None) -> List[Dict[str, Any]]:
-    """读 CSV（自动嗅探分隔符）或 JSONL/JSON 数组。"""
+    """读 CSV（自动嗅探分隔符）、JSONL/JSON 数组或 xlsx。"""
     path = Path(path)
     if not path.exists():
         raise FileNotFoundError(path)
-    text = path.read_text(encoding="utf-8", errors="replace")
-    if path.suffix.lower() in {".jsonl", ".ndjson"}:
-        rows = [json.loads(line) for line in text.splitlines() if line.strip()]
-    elif path.suffix.lower() == ".json":
-        data = json.loads(text)
-        rows = data if isinstance(data, list) else data.get("rows", [])
+    suffix = path.suffix.lower()
+    if suffix in {".xlsx", ".xlsm"}:
+        try:
+            from openpyxl import load_workbook
+        except ImportError as e:
+            raise ImportError("读取 xlsx 需要 openpyxl") from e
+        wb = load_workbook(path, read_only=True, data_only=True)
+        sheet = path.stem
+        if sheet not in wb.sheetnames:
+            preferred = [s for s in wb.sheetnames if "订单" in s]
+            sheet = preferred[0] if preferred else wb.sheetnames[0]
+        ws = wb[sheet]
+        raw = list(ws.iter_rows(values_only=True))
+        if not raw:
+            rows: List[Dict[str, Any]] = []
+        else:
+            header = [str(h) if h is not None else f"c{i}" for i, h in enumerate(raw[0])]
+            rows = [dict(zip(header, r)) for r in raw[1:]]
     else:
-        sample = text[:4096]
-        dialect = csv.Sniffer().sniff(sample, delimiters=",\t;|")
-        rows = list(csv.DictReader(text.splitlines(), dialect=dialect))
+        text = path.read_text(encoding="utf-8", errors="replace")
+        if suffix in {".jsonl", ".ndjson"}:
+            rows = [json.loads(line) for line in text.splitlines() if line.strip()]
+        elif suffix == ".json":
+            data = json.loads(text)
+            rows = data if isinstance(data, list) else data.get("rows", [])
+        else:
+            sample = text[:4096]
+            dialect = csv.Sniffer().sniff(sample, delimiters=",\t;|")
+            rows = list(csv.DictReader(text.splitlines(), dialect=dialect))
     if max_rows is not None:
         rows = rows[: int(max_rows)]
     return rows
 
 
 class GeoProjector:
-    """经纬度 → 本地公里平面；仿真坐标原点=样本均值中心。"""
+    """经纬度 → 本地公里平面。
+
+    from_points 默认用 P5–P95 包围盒估计地图尺度，避免偏远大区
+    （如果洛藏族自治州跨数百公里）把 20km 仿真网格挤成一点。
+    """
 
     def __init__(self, center_lng: float, center_lat: float, grid_size: float = 20.0):
         self.center_lng = float(center_lng)
@@ -96,20 +119,45 @@ class GeoProjector:
         self._ky = EARTH_KM_PER_DEG
 
     @classmethod
-    def from_points(cls, points: Iterable[Tuple[float, float]], grid_size: float = 20.0):
+    def from_points(cls, points: Iterable[Tuple[float, float]],
+                    grid_size: float | None = None,
+                    min_grid: float = 12.0,
+                    max_grid: float = 80.0,
+                    percentile: float = 90.0):
         pts = [(float(a), float(b)) for a, b in points if a is not None and b is not None]
         if not pts:
-            return cls(0.0, 0.0, grid_size)
-        lng = sum(p[0] for p in pts) / len(pts)
-        lat = sum(p[1] for p in pts) / len(pts)
-        return cls(lng, lat, grid_size)
+            return cls(0.0, 0.0, grid_size or 20.0)
+        lngs = sorted(p[0] for p in pts)
+        lats = sorted(p[1] for p in pts)
+
+        def _pct(arr, q):
+            if not arr:
+                return 0.0
+            i = min(len(arr) - 1, max(0, int(round((q / 100.0) * (len(arr) - 1)))))
+            return arr[i]
+
+        lo_q = (100.0 - percentile) / 2.0
+        hi_q = 100.0 - lo_q
+        lng_lo, lng_hi = _pct(lngs, lo_q), _pct(lngs, hi_q)
+        lat_lo, lat_hi = _pct(lats, lo_q), _pct(lats, hi_q)
+        center_lng = (lng_lo + lng_hi) / 2.0
+        center_lat = (lat_lo + lat_hi) / 2.0
+        if grid_size is None:
+            kx = EARTH_KM_PER_DEG * math.cos(math.radians(center_lat))
+            span_x = abs(lng_hi - lng_lo) * kx
+            span_y = abs(lat_hi - lat_lo) * EARTH_KM_PER_DEG
+            # 覆盖主簇，并留边距
+            auto = max(span_x, span_y) * 1.25
+            grid_size = max(min_grid, min(max_grid, auto if auto > 1e-6 else 20.0))
+        return cls(center_lng, center_lat, grid_size)
 
     def project(self, lng: float, lat: float) -> Tuple[float, float]:
         x = (float(lng) - self.center_lng) * self._kx + self.grid_size / 2.0
         y = (float(lat) - self.center_lat) * self._ky + self.grid_size / 2.0
         # 轻微夹紧，避免极端点把地图撑爆
-        x = max(-5.0, min(self.grid_size + 5.0, x))
-        y = max(-5.0, min(self.grid_size + 5.0, y))
+        pad = self.grid_size * 0.25
+        x = max(-pad, min(self.grid_size + pad, x))
+        y = max(-pad, min(self.grid_size + pad, y))
         return (round(x, 3), round(y, 3))
 
 
@@ -180,14 +228,18 @@ def filter_training_orders(cores: List[Dict[str, Any]],
 def build_custom_orders(cores: List[Dict[str, Any]],
                         projector: GeoProjector,
                         max_orders: int = 80,
-                        time_origin: Optional[float] = None) -> List[Dict[str, Any]]:
-    """中间语义 → env.custom_orders（相对分钟）。"""
+                        time_origin: Optional[float] = None,
+                        jitter_same_point_km: float = 1.2) -> List[Dict[str, Any]]:
+    """中间语义 → env.custom_orders（相对分钟）。
+
+    若取送点重合（偏远地区样本常见），按 distance_km 或默认抖动
+    生成可执行的两段路线，避免零行程订单无法体现调度差异。
+    """
     valid = [c for c in cores if c.get("ready_min") is not None]
     if not valid:
         return []
     if time_origin is None:
         time_origin = min(c["ready_min"] for c in valid)
-    # 按就绪时间排序后截断，保证是一个连续时间窗
     valid.sort(key=lambda c: c["ready_min"])
     valid = valid[:max_orders]
 
@@ -195,10 +247,21 @@ def build_custom_orders(cores: List[Dict[str, Any]],
     for i, c in enumerate(valid):
         ready = max(0.0, float(c["ready_min"]) - float(time_origin))
         due_abs = c.get("due_min")
+
+        pickup = projector.project(c["pickup_lng"], c["pickup_lat"])
+        dropoff = projector.project(c["dropoff_lng"], c["dropoff_lat"])
+        same = (abs(float(c["pickup_lng"]) - float(c["dropoff_lng"])) < 1e-7 and
+                abs(float(c["pickup_lat"]) - float(c["dropoff_lat"])) < 1e-7)
+        if same:
+            dist_km = _to_float(c.get("distance_km"), None) or jitter_same_point_km
+            dist_km = max(0.5, min(8.0, float(dist_km)))
+            ang = (i * 2.399963) % (2 * math.pi)  # 黄金角散布
+            dropoff = (
+                round(pickup[0] + dist_km * math.cos(ang), 3),
+                round(pickup[1] + dist_km * math.sin(ang), 3),
+            )
+
         if due_abs is None:
-            # 回退：就绪 + 品类缓冲 + 估算行程
-            pickup = projector.project(c["pickup_lng"], c["pickup_lat"])
-            dropoff = projector.project(c["dropoff_lng"], c["dropoff_lat"])
             route = math.hypot(dropoff[0] - pickup[0], dropoff[1] - pickup[1]) / 0.55 + 5.0
             due = ready + 40.0 + route
         else:
@@ -213,13 +276,12 @@ def build_custom_orders(cores: List[Dict[str, Any]],
         orders.append({
             "order_id": oid,
             "order_type": order_type,
-            "pickup": projector.project(c["pickup_lng"], c["pickup_lat"]),
-            "dropoff": projector.project(c["dropoff_lng"], c["dropoff_lat"]),
+            "pickup": pickup,
+            "dropoff": dropoff,
             "ready_time": round(ready, 2),
             "due_date": round(due, 2),
             "priority": _map_priority(c.get("raw") or {}, order_type),
             "weight": round(float(c.get("weight_kg") or 1.0), 2),
-            # 保留真实链路标注，便于离线 KPI / 双塔样本
             "_real": {
                 "rider_ucode": c.get("rider_ucode"),
                 "rider_id": c.get("rider_id"),
@@ -229,6 +291,7 @@ def build_custom_orders(cores: List[Dict[str, Any]],
                 "arrive_shop_duration_min": _to_float(c.get("arrive_shop_duration_min")),
                 "distribution_duration_min": _to_float(c.get("distribution_duration_min")),
                 "trade_amount": _to_float(c.get("trade_amount")),
+                "same_point_source": same,
             },
         })
     return orders
@@ -293,12 +356,13 @@ def load_real_episode_config(order_path: str | Path,
             points.append((c["pickup_lng"], c["pickup_lat"]))
         if c.get("dropoff_lng") is not None:
             points.append((c["dropoff_lng"], c["dropoff_lat"]))
-    projector = GeoProjector.from_points(points, grid_size=20.0)
+    # grid_size=None → 按 P5–P95 跨度自适应（果洛等大区样本）
+    projector = GeoProjector.from_points(points, grid_size=None)
     orders = build_custom_orders(cores, projector, max_orders=max_orders)
 
     riders = None
     if rider_path:
-        rider_rows = load_rows(rider_path, max_rows=max_riders * 2)
+        rider_rows = load_rider_sample_rows(rider_path, max_rows=max_riders * 8)
         riders = build_rider_configs(rider_rows, projector, max_riders=max_riders)
 
     cfg: Dict[str, Any] = {
@@ -312,13 +376,37 @@ def load_real_episode_config(order_path: str | Path,
             "n_riders": len(riders) if riders else None,
             "geo_center": (projector.center_lng, projector.center_lat),
             "geo_grid_size": projector.grid_size,
+            "same_point_jittered": sum(
+                1 for o in orders if (o.get("_real") or {}).get("same_point_source")),
         },
     }
     if riders:
         cfg["riders"] = riders
-        # geo 配置覆盖地图尺寸（与投影一致）
         cfg["geo_config"] = {"grid_size": projector.grid_size}
     return cfg
+
+
+def load_rider_sample_rows(path: str | Path, max_rows: Optional[int] = None) -> List[Dict[str, Any]]:
+    """读取骑士样本：xlsx 优先「骑手」sheet，否则整表。"""
+    path = Path(path)
+    if path.suffix.lower() in {".xlsx", ".xlsm"}:
+        from openpyxl import load_workbook
+        wb = load_workbook(path, read_only=True, data_only=True)
+        sheet = None
+        for s in wb.sheetnames:
+            if "骑手" in s or "骑士" in s or "rider" in s.lower():
+                sheet = s
+                break
+        if sheet is None:
+            sheet = wb.sheetnames[-1] if len(wb.sheetnames) > 1 else wb.sheetnames[0]
+        ws = wb[sheet]
+        raw = list(ws.iter_rows(values_only=True))
+        if not raw:
+            return []
+        header = [str(h) if h is not None else f"c{i}" for i, h in enumerate(raw[0])]
+        rows = [dict(zip(header, r)) for r in raw[1:]]
+        return rows[:max_rows] if max_rows else rows
+    return load_rows(path, max_rows=max_rows)
 
 
 def offline_kpis_from_real(orders: List[Dict[str, Any]]) -> Dict[str, float]:
