@@ -23,6 +23,7 @@
 !checks/dispatch_integration_check.py
 !checks/real_data_schema_check.py
 !checks/make_realistic_sample.py
+!checks/real_pool_train_check.py
 
 # Schema field maps from DingTalk (no PII samples)
 !data/

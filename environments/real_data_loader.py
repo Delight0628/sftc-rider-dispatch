@@ -16,6 +16,8 @@ import math
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
+import numpy as np
+
 from .real_data_schema import ORDER_CORE_MAP, RIDER_CORE_MAP, DISTANCE_UNIT
 from .delivery_config import ORDER_TYPE_LIST
 
@@ -407,6 +409,55 @@ def load_rider_sample_rows(path: str | Path, max_rows: Optional[int] = None) -> 
         rows = [dict(zip(header, r)) for r in raw[1:]]
         return rows[:max_rows] if max_rows else rows
     return load_rows(path, max_rows=max_rows)
+
+
+def sample_order_window(pool: List[Dict[str, Any]],
+                        size: int,
+                        seed: int = 0,
+                        rebase_time: bool = True) -> List[Dict[str, Any]]:
+    """从真实订单池按时间连续窗口采样，供训练 episode 使用。
+
+    - pool 需已按 ready_time 升序（load_real_episode_config 输出满足）
+    - size <= len(pool) 时滑动窗口随机起点；否则整池拷贝
+    - rebase_time=True：窗口内 ready/due 平移到从 0 开始，避免大段空转
+    """
+    import copy
+    if not pool:
+        return []
+    size = max(1, int(size))
+    if len(pool) <= size:
+        orders = copy.deepcopy(list(pool))
+    else:
+        rng = np.random.RandomState(seed)
+        start = int(rng.randint(0, len(pool) - size + 1))
+        orders = copy.deepcopy(pool[start:start + size])
+    if rebase_time and orders:
+        t0 = min(float(o.get("ready_time", 0.0) or 0.0) for o in orders)
+        if t0 > 1e-6:
+            for o in orders:
+                r = float(o.get("ready_time", 0.0) or 0.0) - t0
+                d = float(o.get("due_date", 0.0) or 0.0) - t0
+                o["ready_time"] = round(max(0.0, r), 2)
+                o["due_date"] = round(max(o["ready_time"] + 5.0, d), 2)
+    return orders
+
+
+def load_real_training_pool(order_path: str | Path,
+                            rider_path: Optional[str | Path] = None,
+                            max_orders: int = 2000,
+                            max_riders: int = 5) -> Dict[str, Any]:
+    """一次性加载真实订单池 + 骑手/地理，供 SimplePPOTrainer 使用。
+
+    返回键与 load_real_episode_config 相同，另加：
+      order_pool: 完整 custom_orders 列表（按 ready_time 排序）
+    """
+    cfg = load_real_episode_config(
+        order_path, rider_path=rider_path,
+        max_orders=max_orders, max_riders=max_riders,
+        completed_only=True,
+    )
+    cfg["order_pool"] = list(cfg.get("custom_orders") or [])
+    return cfg
 
 
 def offline_kpis_from_real(orders: List[Dict[str, Any]]) -> Dict[str, float]:

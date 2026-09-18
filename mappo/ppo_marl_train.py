@@ -70,6 +70,15 @@ def main():
                         choices=["urgency", "upstream"],
                         help="上游候选用途口径：urgency=按时间紧迫性排序（会议口径，默认）；"
                              "upstream=保持上游意愿序")
+    parser.add_argument("--real-orders", type=str, default="",
+                        help="真实订单样本路径（xlsx/csv/json，如果洛 dwd 导出）；"
+                             "设置后 episode 从该订单池滑动窗口采样")
+    parser.add_argument("--real-riders", type=str, default="",
+                        help="真实骑手样本路径（可与订单同一 xlsx 的骑手 sheet）")
+    parser.add_argument("--episode-order-size", type=int, default=80,
+                        help="每个训练 episode 从真实订单池采样的订单数（默认 80）")
+    parser.add_argument("--real-max-pool", type=int, default=2000,
+                        help="加载真实订单池时的最大订单数（完成单过滤后）")
     cli_args, _ = parser.parse_known_args()
     scenario = cli_args.scenario.lower()
     candidate_source = cli_args.candidate_source.lower()
@@ -77,6 +86,10 @@ def main():
     if scenario != "delivery" and candidate_source == "upstream":
         print("⚠️ --candidate-source=upstream 仅对 delivery 场景生效，已回退 endogenous")
         candidate_source = "endogenous"
+    if scenario != "delivery" and (cli_args.real_orders or cli_args.real_riders):
+        print("⚠️ --real-orders/--real-riders 仅对 delivery 场景生效，已忽略")
+        cli_args.real_orders = ""
+        cli_args.real_riders = ""
 
     # 场景配置选择（delivery 使用运力商圈配送配置）
     if scenario == "delivery":
@@ -158,7 +171,35 @@ def main():
                 print(f"    - 候选来源: endogenous（环境自采样 EDD5+最近3+随机2）")
             print(f"    - 候选用途口径: {upstream_order_by}"
                   + ("（时间紧迫性优先，会议口径）" if upstream_order_by == "urgency" else "（保持上游意愿序）"))
+            if cli_args.real_orders:
+                print(f"    - 真实订单池: {cli_args.real_orders}")
+                print(f"    - 骑手样本: {cli_args.real_riders or '（默认 RIDERS）'}")
+                print(f"    - 每回合采样: {cli_args.episode_order_size} 单（池上限 {cli_args.real_max_pool}）")
         print("-" * 40)
+
+        env_config = {
+            'scenario': scenario,
+            'candidate_source': candidate_source,
+            'upstream_order_by': upstream_order_by,
+        }
+        if scenario == "delivery" and cli_args.real_orders:
+            from environments.real_data_loader import load_real_training_pool
+            pool_cfg = load_real_training_pool(
+                cli_args.real_orders,
+                rider_path=cli_args.real_riders or None,
+                max_orders=int(cli_args.real_max_pool),
+                max_riders=5,
+            )
+            env_config['real_order_pool'] = pool_cfg.get('order_pool') or []
+            env_config['episode_order_size'] = int(cli_args.episode_order_size)
+            if pool_cfg.get('riders'):
+                env_config['riders'] = pool_cfg['riders']
+            if pool_cfg.get('geo_config'):
+                env_config['geo_config'] = pool_cfg['geo_config']
+            env_config['data_source'] = pool_cfg.get('data_source')
+            print(f"📦 已加载真实订单池: {len(env_config['real_order_pool'])} 单 | "
+                  f"骑手 {len(env_config.get('riders') or {})} | "
+                  f"网格 {env_config.get('geo_config')}")
 
         trainer = SimplePPOTrainer(
             initial_lr=LEARNING_RATE_CONFIG["initial_lr"],
@@ -167,9 +208,7 @@ def main():
             training_targets=None,
             models_root_dir=cli_args.models_dir,
             logs_root_dir=cli_args.logs_dir,
-            env_config={'scenario': scenario,
-                        'candidate_source': candidate_source,
-                        'upstream_order_by': upstream_order_by}
+            env_config=env_config,
         )
         
         # 启动自适应训练：系统将根据性能自动决定何时停止

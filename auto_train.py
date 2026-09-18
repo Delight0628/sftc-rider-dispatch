@@ -274,13 +274,25 @@ def launch_background_process(args):
     # 3. 构建在后台运行的命令
     # 使用 sys.executable 确保使用相同的Python解释器
     # 使用 -u 标志确保实时输出
+    extra_cli = (
+        f"--scenario {getattr(args, 'scenario', 'factory')} "
+        f"--candidate-source {getattr(args, 'candidate_source', 'endogenous')} "
+        f"--upstream-order-by {getattr(args, 'upstream_order_by', 'urgency')} "
+    )
+    if getattr(args, 'real_orders', ''):
+        extra_cli += f"--real-orders \"{args.real_orders}\" "
+    if getattr(args, 'real_riders', ''):
+        extra_cli += f"--real-riders \"{args.real_riders}\" "
+    if getattr(args, 'episode_order_size', None):
+        extra_cli += f"--episode-order-size {int(args.episode_order_size)} "
+    if getattr(args, 'real_max_pool', None):
+        extra_cli += f"--real-max-pool {int(args.real_max_pool)} "
     command_str = (
         f"nohup {sys.executable} -u {__file__} "
         f"\"{args.folder_name}\" "
         f"--internal-run "
         f"--main-dir \"{main_dir_name}\" "
-        f"--scenario {getattr(args, 'scenario', 'factory')} "
-        f"--candidate-source {getattr(args, 'candidate_source', 'endogenous')} "
+        f"{extra_cli}"
         f"> \"{log_file_path}\" 2>&1 &"
     )
 
@@ -354,7 +366,18 @@ def run_background_tasks(args):
         "--logs-dir", logs_dir,
         "--scenario", getattr(args, 'scenario', 'factory'),
         "--candidate-source", getattr(args, 'candidate_source', 'endogenous'),
+        "--upstream-order-by", getattr(args, 'upstream_order_by', 'urgency'),
     ]
+    real_orders = getattr(args, 'real_orders', '') or ''
+    real_riders = getattr(args, 'real_riders', '') or ''
+    if real_orders:
+        train_cmd_list += ["--real-orders", real_orders]
+    if real_riders:
+        train_cmd_list += ["--real-riders", real_riders]
+    if getattr(args, 'episode_order_size', None):
+        train_cmd_list += ["--episode-order-size", str(args.episode_order_size)]
+    if getattr(args, 'real_max_pool', None):
+        train_cmd_list += ["--real-max-pool", str(args.real_max_pool)]
     launch_and_monitor_child(train_cmd_list, train_log, cwd=main_dir_abs)
     
     time.sleep(10) 
@@ -397,6 +420,26 @@ def main():
     parser.add_argument(
         "--candidate-source", type=str, default="endogenous", choices=["endogenous", "upstream"],
         help="配送场景候选来源：endogenous=环境自采样；upstream=上游（双塔+W&D）精排候选"
+    )
+    parser.add_argument(
+        "--upstream-order-by", type=str, default="urgency", choices=["urgency", "upstream"],
+        help="上游候选排序口径（默认 urgency=时间紧迫性优先）"
+    )
+    parser.add_argument(
+        "--real-orders", type=str, default="",
+        help="真实订单样本路径（delivery）；episode 从该池滑动窗口采样"
+    )
+    parser.add_argument(
+        "--real-riders", type=str, default="",
+        help="真实骑手样本路径（可选）"
+    )
+    parser.add_argument(
+        "--episode-order-size", type=int, default=80,
+        help="每回合从真实订单池采样的订单数"
+    )
+    parser.add_argument(
+        "--real-max-pool", type=int, default=2000,
+        help="真实订单池加载上限"
     )
     args = parser.parse_args()
 

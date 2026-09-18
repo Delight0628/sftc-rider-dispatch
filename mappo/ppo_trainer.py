@@ -102,8 +102,12 @@ class SimplePPOTrainer:
         # 场景配置（scenario='delivery' 时使用运力商圈配送环境）
         self.env_config = dict(env_config) if env_config else {}
         self.env_scenario = str(self.env_config.get('scenario', 'factory')).lower()
-        
-        
+        # 真实订单池（果洛等业务样本）：非空时 episode 从池窗口采样
+        self._real_order_pool = list(self.env_config.get('real_order_pool') or [])
+        self._episode_order_size = int(self.env_config.get('episode_order_size', 80) or 80)
+        self._real_riders = self.env_config.get('riders') or None
+        self._real_geo_config = self.env_config.get('geo_config') or None
+
         # 使用配置文件的系统资源配置
         self.num_workers = SYSTEM_CONFIG["num_parallel_workers"]
         print(f"使用 {self.num_workers} 个并行环境进行数据采集")
@@ -545,11 +549,27 @@ class SimplePPOTrainer:
             # 配送场景：订单字段结构不同（order_type/pickup/dropoff/...），必须使用配送生成器
             episode_index = (self.total_steps // num_steps)
             from environments.delivery_config import (
-                DELIVERY_BASE_ORDERS, generate_random_delivery_orders, RIDERS as _DELIVERY_RIDERS,
+                DELIVERY_BASE_ORDERS, generate_random_delivery_orders,
+                RIDERS as _DELIVERY_RIDERS,
+                generate_mock_upstream_candidates,
             )
+            _rider_cfg = self.env_config.get('riders') or _DELIVERY_RIDERS
+            _rider_names = list(_rider_cfg.keys())
+
             if use_base_orders_this_episode:
+                # 基础订单锚点（稳定探索）；真实池模式下仍保留少量锚点回合
                 episode_orders = DELIVERY_BASE_ORDERS
                 episode_tag = "DELIVERY_BASE_ORDERS"
+            elif self._real_order_pool:
+                # 真实订单池窗口采样（业务样本，如果洛 20260915）
+                from environments.real_data_loader import sample_order_window
+                episode_orders = sample_order_window(
+                    self._real_order_pool,
+                    size=self._episode_order_size,
+                    seed=int(self.seed + 10007 * episode_index),
+                    rebase_time=True,
+                )
+                episode_tag = f"真实订单池窗口(n={len(episode_orders)})"
             else:
                 # 随机配送订单（与工厂侧相同的确定性种子逻辑）
                 _py_state = random.getstate()
@@ -571,14 +591,12 @@ class SimplePPOTrainer:
 
             # 三层联调：上游（双塔+W&D）精排候选
             # - 外部注入：env_config['upstream_candidates'] 直接传入真实/Mock 上游结果
-            # - mock 上游：env_config 指定 candidate_source='upstream' 且未注入时，
-            #   由本回合订单现算一份 mock 精排（真实上游接入后即可替换）
+            # - mock 上游：candidate_source='upstream' 且未注入时，按本回合订单现算 mock
             if self.env_config.get('upstream_candidates'):
                 episode_upstream = self.env_config['upstream_candidates']
             elif str(self.env_config.get('candidate_source', '')).lower() == 'upstream':
-                from environments.delivery_config import generate_mock_upstream_candidates
                 episode_upstream = generate_mock_upstream_candidates(
-                    episode_orders, list(_DELIVERY_RIDERS.keys()),
+                    episode_orders, _rider_names,
                     top_k=int(self.env_config.get('upstream_top_k', 10)),
                     seed=int(self.seed + 33331 * episode_index),
                 )
@@ -702,6 +720,11 @@ class SimplePPOTrainer:
                 worker_curriculum_config['scenario'] = self.env_scenario
                 worker_curriculum_config['custom_orders'] = episode_orders
                 worker_curriculum_config['randomize_env'] = (not use_base_orders_this_episode)
+                # 真实样本：骑手/地理配置与训练入口保持一致（146 维假设 5 骑手）
+                if self._real_riders:
+                    worker_curriculum_config['riders'] = self._real_riders
+                if self._real_geo_config:
+                    worker_curriculum_config['geo_config'] = self._real_geo_config
                 # 三层联调：向 worker 透传上游精排候选与相关口径
                 if episode_upstream is not None:
                     worker_curriculum_config['candidate_source'] = 'upstream'

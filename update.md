@@ -173,13 +173,22 @@ MAPPO 对标：完成率不掉前提下，逼近/超过 nearest 的准时与里�
 | `delivery_config.py` / `delivery_env.py` | ✅ 环境 + 上游 + 真实 riders/geo 注入 |
 | `real_data_schema.py` / `real_data_loader.py` | ✅ 字段映射、xlsx/csv、自适应投影、同点抖动 |
 | `evaluation_delivery.py` | ✅ 五基线 + `--real-orders/--real-riders` + KPI 输出 |
-| `ppo_trainer.py` / `ppo_marl_train.py` / `auto_train.py` | ✅ scenario + candidate-source 透传 |
+| `ppo_marl_train.py` / `ppo_trainer.py` / `auto_train.py` | ✅ scenario + candidate-source；**真实订单池窗口采样 + mock 上游** |
 | checks 四套 | ✅ 31+41+14+24 全绿 |
 | 真实双塔/W&D 替换 mock | ⏳ 契约已固定 |
 | MAPPO 完整训练 | ⏳ 待算力 |
 | 配送可视化 / LLM 智能体包装 | ⏳ 决赛 Demo |
 
 ## 7. 进度记录（倒序）
+
+### 2026-09-17 · 第 7 次 — 训练入口接入真实订单池
+- `ppo_marl_train.py` 新增 `--real-orders / --real-riders / --episode-order-size / --real-max-pool`
+- trainer：`env_config['real_order_pool']` 非空时，episode 从池做**时间连续窗口采样**并 rebase 到 0；基础锚点回合仍混入 `DELIVERY_BASE_ORDERS`
+- mock 上游按**本回合订单 + 注入骑手名**现算；`riders`/`geo_config` 透传 worker
+- `auto_train.py` 同步透传上述参数
+- `real_data_loader.load_real_training_pool` / `sample_order_window`
+- 校验 `checks/real_pool_train_check.py` **20/20**（无 TF）
+- 本机不装 venv/TF；远程 GPU 训练命令见 §10
 
 ### 2026-09-17 · 第 6 次 — 果洛全量样本接入
 - 接入全量 xlsx（1193/200），弃用 500 行截断版  
@@ -233,7 +242,7 @@ MAPPO 对标：完成率不掉前提下，逼近/超过 nearest 的准时与里�
 | 7 | `_advance_to_next_epoch` | 送达事件时间乱序 | 按 (时刻,骑手) 排序 |
 | 8 | `ppo_trainer.py` | 阶段二回退工厂口径 | 场景感知 |
 
-## 10. 验证命令
+## 10. 验证与训练命令
 
 ```bash
 set PYTHONPATH=D:\rider-dispatch-mappo
@@ -242,12 +251,40 @@ python checks/delivery_logic_check.py         # 31/31
 python checks/delivery_upstream_check.py      # 41/41
 python checks/dispatch_integration_check.py   # 14/14
 python checks/real_data_schema_check.py       # 24/24
+python checks/real_pool_train_check.py        # 20/20 真实池训练链路
 
 # 果洛真实样本基线
 python evaluation_delivery.py --baseline all --episodes 2 \
   --real-orders data/real_incoming/orders_guoluo_20260915_ready.csv \
   --real-riders data/real_incoming/riders_guoluo_20260915_full.csv
+```
 
-# 训练（需算力）
+**远程 GPU 训练（本机不装 TF/venv）**
+
+```bash
+# 依赖：Python 3.10/3.11 + tensorflow==2.15 + numpy<2 + pettingzoo/gymnasium/simpy
+# 数据：把 data/real_incoming/ 与仓库一并同步到训练机
+
+# 果洛池 + mock 上游（会议口径 urgency）
+python mappo/ppo_marl_train.py --scenario delivery \
+  --candidate-source upstream --upstream-order-by urgency \
+  --real-orders data/real_incoming/orders_guoluo_20260915_ready.csv \
+  --real-riders data/real_incoming/riders_guoluo_20260915_full.csv \
+  --episode-order-size 80
+
+# 对照：环境自采样候选（不用上游）
+python mappo/ppo_marl_train.py --scenario delivery \
+  --candidate-source endogenous \
+  --real-orders data/real_incoming/orders_guoluo_20260915_ready.csv \
+  --real-riders data/real_incoming/riders_guoluo_20260915_full.csv
+
+# 纯模拟订单（无真实池）对照
 python mappo/ppo_marl_train.py --scenario delivery --candidate-source upstream
+
+# 自动化
+python auto_train.py "guoluo-real-upstream" --scenario delivery \
+  --candidate-source upstream --upstream-order-by urgency \
+  --real-orders data/real_incoming/orders_guoluo_20260915_ready.csv \
+  --real-riders data/real_incoming/riders_guoluo_20260915_full.csv \
+  --episode-order-size 80
 ```
