@@ -31,6 +31,15 @@
 !data/schema/dwd_fact_order_whole_字段中文对照.txt
 !data/schema/dim_rider_single_字段中文对照.txt
 
+# 果洛业务样本（订单/骑手，供训练与评估托管）
+!data/real_incoming/
+!data/real_incoming/orders_guoluo_20260915_full.csv
+!data/real_incoming/orders_guoluo_20260915_ready.csv
+!data/real_incoming/riders_guoluo_20260915_full.csv
+!data/real_incoming/eval_guoluo_full_baselines.json
+!骑手派单仿真样本_果洛藏族自治州_20260915_全量.xlsx
+!骑手派单仿真样本_果洛藏族自治州_20260915.xlsx
+
 # Python scripts
 !auto_train.py
 !evaluation_delivery.py
