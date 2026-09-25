@@ -57,3 +57,10 @@
 
 # Dependencies
 !requirements.txt
+
+# Training supervisor (metrics + local dashboard)
+!supervisor/
+!supervisor/__init__.py
+!supervisor/metrics_recorder.py
+!supervisor/local_dashboard.py
+!supervisor/start_train_remote.sh

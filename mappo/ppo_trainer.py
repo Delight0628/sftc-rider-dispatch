@@ -37,6 +37,15 @@ from mappo.ppo_buffer import ExperienceBuffer
 from mappo.ppo_network import PPONetwork
 from mappo.ppo_worker import _collect_experience_wrapper
 
+try:
+    from supervisor.metrics_recorder import MetricsRecorder, build_episode_record
+except Exception:
+    try:
+        from metrics_recorder import MetricsRecorder, build_episode_record
+    except Exception:
+        MetricsRecorder = None
+        build_episode_record = None
+
 TENSORBOARD_AVAILABLE = hasattr(tf.summary, "create_file_writer")
 
 
@@ -243,13 +252,34 @@ class SimplePPOTrainer:
         self.models_dir = f"{self.base_models_dir}/{self.start_time_str}"
         os.makedirs(self.models_dir, exist_ok=True)
         print(f"模型保存目录: {self.models_dir}")
-        
+
         # TensorBoard支持
         self.tensorboard_dir = (
             os.path.join(logs_root_dir, "tensorboard_logs", self.timestamp)
             if logs_root_dir else f"mappo/tensorboard_logs/{self.timestamp}"
         )
         os.makedirs(self.tensorboard_dir, exist_ok=True)
+
+        # JSONL metrics for local supervisor dashboard
+        self.metrics_recorder = None
+        self.metrics_path = None
+        if MetricsRecorder is not None:
+            metrics_dir = logs_root_dir if logs_root_dir else "mappo/logs"
+            self.metrics_path = os.path.join(metrics_dir, "metrics.jsonl")
+            try:
+                self.metrics_recorder = MetricsRecorder(self.metrics_path)
+                self.metrics_recorder.write_event(
+                    "train_start",
+                    models_dir=self.models_dir,
+                    tensorboard_dir=self.tensorboard_dir,
+                    num_workers=self.num_workers,
+                    total_train_episodes=total_train_episodes,
+                    steps_per_episode=steps_per_episode,
+                )
+                print(f"📈 指标文件: {self.metrics_path}")
+            except Exception as e:
+                print(f"⚠️  指标文件初始化失败: {e}")
+                self.metrics_recorder = None
         if TENSORBOARD_AVAILABLE:
             self.train_writer = None
             self.current_tensorboard_run_name = None
@@ -1701,7 +1731,49 @@ class SimplePPOTrainer:
                         print(f"❌ TensorBoard写入失败 (回合{episode}): {e}")
                         import traceback
                         traceback.print_exc()
-                
+
+                # --- supervisor JSONL metrics (every episode) ---
+                if self.metrics_recorder is not None and build_episode_record is not None:
+                    try:
+                        if self.generalization_phase_active:
+                            phase_name = "generalization"
+                        elif self.foundation_training_completed:
+                            phase_name = "foundation_done"
+                        else:
+                            phase_name = "foundation"
+                        best_score_val = self.best_score_dual_objective
+                        if best_score_val is None or best_score_val == float('-inf'):
+                            best_score_val = current_score
+                        rec = build_episode_record(
+                            episode=episode,
+                            max_episodes=max_episodes,
+                            phase=phase_name,
+                            episode_reward=episode_reward,
+                            losses=losses,
+                            kpi=kpi_results,
+                            score=current_score,
+                            completion_rate=completion_rate_for_check,
+                            iteration_duration=iteration_duration,
+                            collect_duration=collect_duration,
+                            update_duration=update_duration,
+                            total_steps=self.total_steps,
+                            learning_rate=float(getattr(self, 'current_learning_rate', 0.0)),
+                            entropy_coeff=float(getattr(self, 'current_entropy_coeff', 0.0)),
+                            best_score=float(best_score_val),
+                            target_achieved_count=int(getattr(self, 'foundation_achievement_count', 0) or 0),
+                            foundation_completed=bool(self.foundation_training_completed),
+                            generalization_active=bool(self.generalization_phase_active),
+                            episode_task=str((getattr(self, '_last_collect_mixing_summary', None) or {}).get('episode_task', '') or ''),
+                            workers=self.num_workers,
+                            extra={
+                                "avg_worker_reward": float(episode_reward) / max(self.num_workers, 1),
+                                "epoch_times_n": len(self.iteration_times),
+                            },
+                        )
+                        self.metrics_recorder.write_episode(rec)
+                    except Exception as e:
+                        print(f"⚠️  指标写入失败(回合{episode}): {e}")
+
                 # --- 核心创新：新的训练结束逻辑 ---
                 if training_should_end:
                     print(f"\n🎉 训练完成！模型已通过基础训练和泛化强化两个阶段的认证。")
