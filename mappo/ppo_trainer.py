@@ -46,6 +46,14 @@ except Exception:
         MetricsRecorder = None
         build_episode_record = None
 
+try:
+    from supervisor.episode_logger import EpisodeLogger
+except Exception:
+    try:
+        from episode_logger import EpisodeLogger
+    except Exception:
+        EpisodeLogger = None
+
 TENSORBOARD_AVAILABLE = hasattr(tf.summary, "create_file_writer")
 
 
@@ -263,8 +271,30 @@ class SimplePPOTrainer:
         # JSONL metrics for local supervisor dashboard
         self.metrics_recorder = None
         self.metrics_path = None
+        self.episode_logger = None
+        self.episode_log_root = None
+        metrics_dir = logs_root_dir if logs_root_dir else "mappo/logs"
+        os.makedirs(metrics_dir, exist_ok=True)
+
+        if EpisodeLogger is not None:
+            try:
+                self.episode_logger = EpisodeLogger(metrics_dir, run_name=self.timestamp)
+                self.episode_log_root = self.episode_logger.run_dir
+                print(f"📁 回合日志目录: {self.episode_log_root}/episodes")
+                self.episode_logger.write_event(
+                    "train_start",
+                    models_dir=self.models_dir,
+                    tensorboard_dir=self.tensorboard_dir,
+                    num_workers=self.num_workers,
+                    total_train_episodes=total_train_episodes,
+                    steps_per_episode=steps_per_episode,
+                )
+            except Exception as e:
+                print(f"⚠️  回合日志目录初始化失败: {e}")
+                self.episode_logger = None
+
         if MetricsRecorder is not None:
-            metrics_dir = logs_root_dir if logs_root_dir else "mappo/logs"
+            # stable path for local dashboard polling
             self.metrics_path = os.path.join(metrics_dir, "metrics.jsonl")
             try:
                 self.metrics_recorder = MetricsRecorder(self.metrics_path)
@@ -275,11 +305,14 @@ class SimplePPOTrainer:
                     num_workers=self.num_workers,
                     total_train_episodes=total_train_episodes,
                     steps_per_episode=steps_per_episode,
+                    episode_log_root=getattr(self, "episode_log_root", None),
                 )
                 print(f"📈 指标文件: {self.metrics_path}")
             except Exception as e:
                 print(f"⚠️  指标文件初始化失败: {e}")
                 self.metrics_recorder = None
+        else:
+            self.metrics_path = None
         if TENSORBOARD_AVAILABLE:
             self.train_writer = None
             self.current_tensorboard_run_name = None
@@ -1771,8 +1804,11 @@ class SimplePPOTrainer:
                             },
                         )
                         self.metrics_recorder.write_episode(rec)
+                        self._last_episode_metrics_record = rec
                     except Exception as e:
                         print(f"⚠️  指标写入失败(回合{episode}): {e}")
+                else:
+                    self._last_episode_metrics_record = None
 
                 # --- 核心创新：新的训练结束逻辑 ---
                 if training_should_end:
@@ -2044,7 +2080,44 @@ class SimplePPOTrainer:
                 print(line3)
                 print(line4)
                 print() # 每个回合后添加一个空行
-                
+
+                # ------------------- 每回合完整日志落盘 -------------------
+                if getattr(self, "episode_logger", None) is not None:
+                    try:
+                        ep_console = [line1, line2, line3, line4]
+                        ep_metrics = dict(getattr(self, "_last_episode_metrics_record", None) or {})
+                        if not ep_metrics:
+                            ep_metrics = {
+                                "episode": episode,
+                                "episode_reward": float(episode_reward),
+                                "score": float(current_score),
+                                "completion_rate": float(completion_rate_for_check),
+                                "iteration_duration": float(iteration_duration),
+                                "collect_duration": float(collect_duration),
+                                "update_duration": float(update_duration),
+                                "total_steps": int(self.total_steps),
+                            }
+                        ep_metrics.setdefault("wall_time", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+                        ep_metrics["console_line1"] = line1
+                        ep_metrics["console_line2"] = line2
+                        ep_metrics["console_line3"] = line3
+                        ep_metrics["console_line4"] = line4
+                        notes = []
+                        if model_update_info:
+                            notes.append(model_update_info)
+                        if dual_objective_model_update_info:
+                            notes.append(dual_objective_model_update_info.strip())
+                        folder = self.episode_logger.save_episode(
+                            episode_1based=episode + 1,
+                            console_lines=ep_console,
+                            metrics=ep_metrics,
+                            extra_notes=notes or None,
+                        )
+                        if episode == 0 or (episode + 1) % 20 == 0:
+                            print(f"📝 回合日志: {folder}")
+                    except Exception as e:
+                        print(f"⚠️  回合日志写入失败(回合{episode}): {e}")
+
                 # ------------------- 统一日志输出结束 -------------------
                         
             
@@ -2063,6 +2136,29 @@ class SimplePPOTrainer:
             if self.iteration_times:
                 avg_iteration_time = np.mean(self.iteration_times)
                 print(f"⚡ 平均每轮: {avg_iteration_time:.1f}s | 训练效率: {len(self.iteration_times)/total_training_time*60:.1f}轮/分钟")
+
+            # 每回合日志目录收尾摘要
+            if getattr(self, "episode_logger", None) is not None:
+                try:
+                    self.episode_logger.write_event(
+                        "train_end",
+                        total_episodes=len(self.iteration_times),
+                        total_training_time_sec=float(total_training_time),
+                    )
+                    self.episode_logger.write_summary({
+                        "models_dir": self.models_dir,
+                        "tensorboard_dir": self.tensorboard_dir,
+                        "metrics_path": self.metrics_path,
+                        "episode_log_root": getattr(self, "episode_log_root", None),
+                        "episodes_logged": len(self.iteration_times),
+                        "total_training_time_sec": float(total_training_time),
+                        "best_score_dual_objective": float(self.best_score_dual_objective)
+                        if self.best_score_dual_objective != float('-inf') else None,
+                        "best_episode_dual_objective": int(self.best_episode_dual_objective),
+                    })
+                    print(f"📁 完整回合日志: {getattr(self, 'episode_log_root', '')}/episodes")
+                except Exception as e:
+                    print(f"⚠️  训练摘要写入失败: {e}")
 
             # 🔧 Bug修复：输出最终的、可靠的最佳KPI
             print("\n" + "="*40)

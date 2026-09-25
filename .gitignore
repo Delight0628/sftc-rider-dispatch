@@ -62,5 +62,7 @@
 !supervisor/
 !supervisor/__init__.py
 !supervisor/metrics_recorder.py
+!supervisor/episode_logger.py
 !supervisor/local_dashboard.py
 !supervisor/start_train_remote.sh
+!supervisor/log_parser.py

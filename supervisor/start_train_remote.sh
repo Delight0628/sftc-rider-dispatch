@@ -6,7 +6,13 @@ LOGDIR=/quota/train_logs
 MODELDIR=/quota/models
 LOGFILE="$LOGDIR/train_full.log"
 PIDFILE="$LOGDIR/train.pid"
-mkdir -p "$LOGDIR" "$MODELDIR"
+mkdir -p "$LOGDIR" "$MODELDIR" "$LOGDIR/episodes"
+
+# 训练日志目录结构（参考 MARL_FOR_W_Factory）:
+#   $LOGDIR/train_full.log          # 完整训练 stdout
+#   $LOGDIR/metrics.jsonl           # 每回合结构化指标
+#   $LOGDIR/run_*/episodes/ep_XXXXXX/  # 每回合完整日志
+#       episode.log  metrics.json
 
 # stop previous
 if [[ -f "$PIDFILE" ]]; then
