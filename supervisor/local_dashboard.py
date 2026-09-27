@@ -27,7 +27,7 @@ from typing import Any, Dict, List, Optional
 # SSH config (override via CLI flags or env: TRAIN_SSH_PASSWORD)
 # ---------------------------------------------------------------------------
 DEFAULT_SSH = {
-    "host": os.environ.get("TRAIN_SSH_HOST", "ssh.virtaicloud.com"),
+    "host": os.environ.get("TRAIN_SSH_HOST", "direct.virtaicloud.com"),
     "port": int(os.environ.get("TRAIN_SSH_PORT", "30022")),
     "user": os.environ.get(
         "TRAIN_SSH_USER",

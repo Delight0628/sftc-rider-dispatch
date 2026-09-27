@@ -66,3 +66,4 @@
 !supervisor/local_dashboard.py
 !supervisor/start_train_remote.sh
 !supervisor/log_parser.py
+!supervisor/backup_sync.py
