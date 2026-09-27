@@ -34,8 +34,14 @@ DEFAULT_SSH = {
         "delight@root@ssh-acbb566263aa1fdfbe1f7d9aadd0e920.mczzavdaekmx",
     ),
     "password": os.environ.get("TRAIN_SSH_PASSWORD", ""),
-    "remote_metrics": os.environ.get("TRAIN_METRICS_PATH", "/quota/train_logs/metrics.jsonl"),
-    "remote_log": os.environ.get("TRAIN_LOG_PATH", "/quota/train_logs/train_full.log"),
+    "remote_metrics": os.environ.get(
+        "TRAIN_METRICS_PATH",
+        "/gemini/code/sftc-rider-dispatch/runs/latest/logs/metrics.jsonl",
+    ),
+    "remote_log": os.environ.get(
+        "TRAIN_LOG_PATH",
+        "/gemini/code/sftc-rider-dispatch/runs/latest/train_full.log",
+    ),
 }
 
 STATE: Dict[str, Any] = {
@@ -83,6 +89,9 @@ def _run_ssh(cfg: Dict[str, Any], remote_cmd: str, timeout: int = 20) -> str:
             env=env,
         )
         out = proc.stdout or b""
+        if proc.returncode != 0:
+            err = (proc.stderr or b"").decode("utf-8", errors="replace").strip()
+            raise RuntimeError(err or f"ssh exit {proc.returncode}")
         return out.decode("utf-8", errors="replace")
     finally:
         try:
@@ -129,9 +138,12 @@ def poll_once(cfg: Dict[str, Any]) -> None:
         "nvidia-smi --query-gpu=name,utilization.gpu,memory.used,memory.total "
         "--format=csv,noheader,nounits 2>/dev/null | head -1; "
         "echo __CPU__; "
-        "nproc; "
+        "q=$(cat /sys/fs/cgroup/cpu/cpu.cfs_quota_us 2>/dev/null || echo -1); "
+        "p=$(cat /sys/fs/cgroup/cpu/cpu.cfs_period_us 2>/dev/null || echo 1); "
+        "if [ \"$q\" -gt 0 ] 2>/dev/null; then echo $((q/p)); else nproc; fi; "
         "grep -m1 'model name' /proc/cpuinfo | cut -d: -f2-; "
-        "free -m | awk '/Mem:/{print $2,$3,$7}'; "
+        "awk '{printf \"%.0f\\n\", $1/1024/1024}' /sys/fs/cgroup/memory/memory.limit_in_bytes 2>/dev/null; "
+        "awk '{printf \"%.0f\\n\", $1/1024/1024}' /sys/fs/cgroup/memory/memory.usage_in_bytes 2>/dev/null; "
         "echo __PROC__; "
         "ps aux | grep -E 'ppo_marl_train|spawn_main' | grep -v grep | wc -l; "
         "echo __LOG__; "
@@ -177,11 +189,23 @@ def poll_once(cfg: Dict[str, Any]) -> None:
                 elif ("intel" in s.lower() or "amd" in s.lower() or "xeon" in s.lower()) and not host["cpu_model"]:
                     host["cpu_model"] = s
                 elif s:
-                    parts = s.split()
-                    if len(parts) >= 3 and parts[0].isdigit():
-                        host["mem_total_mb"] = int(parts[0])
-                        host["mem_used_mb"] = int(parts[1])
-                        host["mem_avail_mb"] = int(parts[2])
+                    # cgroup: limit_mb then usage_mb (floats)
+                    try:
+                        val = float(s)
+                    except ValueError:
+                        parts = s.split()
+                        if len(parts) >= 3:
+                            try:
+                                host["mem_total_mb"] = int(float(parts[0]))
+                                host["mem_used_mb"] = int(float(parts[1]))
+                                host["mem_avail_mb"] = int(float(parts[2]))
+                            except ValueError:
+                                pass
+                    else:
+                        if host["mem_total_mb"] == 0:
+                            host["mem_total_mb"] = int(val)
+                        elif host["mem_used_mb"] == 0:
+                            host["mem_used_mb"] = int(val)
             elif section == "proc":
                 if s.isdigit():
                     host["proc_count"] = int(s)
