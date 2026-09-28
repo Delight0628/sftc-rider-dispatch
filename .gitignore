@@ -14,7 +14,6 @@
 !environments/real_data_schema.py
 !environments/real_data_loader.py
 !environments/__init__.py
-!update.md
 
 # Verification scripts
 !checks/
@@ -38,7 +37,6 @@
 !data/real_incoming/riders_guoluo_20260915_full.csv
 !data/real_incoming/eval_guoluo_full_baselines.json
 !骑手派单仿真样本_果洛藏族自治州_20260915_全量.xlsx
-!骑手派单仿真样本_果洛藏族自治州_20260915.xlsx
 
 # Python scripts
 !auto_train.py
