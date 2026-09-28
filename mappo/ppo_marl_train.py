@@ -75,8 +75,8 @@ def main():
                              "设置后 episode 从该订单池滑动窗口采样")
     parser.add_argument("--real-riders", type=str, default="",
                         help="真实骑手样本路径（可与订单同一 xlsx 的骑手 sheet）")
-    parser.add_argument("--episode-order-size", type=int, default=80,
-                        help="每个训练 episode 从真实订单池采样的订单数（默认 80）")
+    parser.add_argument("--episode-order-size", type=int, default=40,
+                        help="每个训练 episode 从真实订单池采样的订单数（默认 40，果洛真实单更吃运力）")
     parser.add_argument("--real-max-pool", type=int, default=2000,
                         help="加载真实订单池时的最大订单数（完成单过滤后）")
     cli_args, _ = parser.parse_known_args()

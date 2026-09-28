@@ -206,7 +206,7 @@ DELIVERY_REWARD_CONFIG = {
     "on_time_completion_reward": 80.0,
     "tardiness_penalty_scaler": -4.0,
     "use_huber_tardiness": True,
-    "tardiness_huber_delta_norm": 0.3,
+    "tardiness_huber_delta_norm": 0.8,
     # 过程塑形
     "progress_shaping_coeff": 0.1,
     "unnecessary_idle_penalty": -1.0,         # 有可接订单且携带未满却不接单
@@ -244,7 +244,7 @@ DELIVERY_TRAINING_FLOW_CONFIG = {
             "tardiness_threshold": 300.0,
             "min_completion_rate": 95.0,
         },
-        "multi_task_mixing": {"enabled": True, "base_worker_fraction": 0.25},
+        "multi_task_mixing": {"enabled": True, "base_worker_fraction": 0.40},
         # 配送场景暂不启用课程学习（订单规模由随机生成器控制）
         "curriculum_learning": {"enabled": False, "stages": []},
     },
@@ -254,7 +254,7 @@ DELIVERY_TRAINING_FLOW_CONFIG = {
             "target_consistency": 10,
             "min_completion_rate": 85.0,
         },
-        "multi_task_mixing": {"enabled": True, "base_worker_fraction": 0.25},
+        "multi_task_mixing": {"enabled": True, "base_worker_fraction": 0.40},
         "dynamic_events": {
             "rider_offline_enabled": True,       # 骑手离线
             "emergency_orders_enabled": True,    # 紧急订单
@@ -535,8 +535,16 @@ def calculate_delivery_episode_score(kpi_results: Dict[str, float], config: Dict
         return 0.0
 
     completion_score = min(1.0, max(0.0, completed / target))
-    tardiness_score = max(0.0, 1.0 - tardiness / (sim_time * 1.0))
-    makespan_score = max(0.0, 1.0 - makespan / (sim_time * 1.2))
+
+    # 真实果洛等大区：总 tardiness 可达数千分钟，用 sim_time 做分母会被打成 0。
+    # 改为「单均迟到」：avg_late = total_tardiness / max(完成或目标单量)
+    # 60 分钟单均迟到 → 归零；15 分钟 → 0.75。与池大小无关。
+    n_for_avg = max(int(completed), int(target), 1)
+    avg_late = float(tardiness) / float(n_for_avg)
+    tardiness_score = max(0.0, 1.0 - avg_late / 60.0)
+
+    # makespan 也按「相对仿真窗口」并防止真实长序列被一票否决
+    makespan_score = max(0.0, 1.0 - makespan / max(sim_time * 1.2, 1.0))
     utilization_score = min(1.0, max(0.0, utilization))
 
     return float(

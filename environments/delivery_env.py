@@ -150,6 +150,19 @@ class DeliverySim:
             self._simulation_time = float(self.config.get('SIMULATION_TIME', DELIVERY_SIMULATION_TIME))
         except Exception:
             self._simulation_time = float(DELIVERY_SIMULATION_TIME)
+
+        # 真实订单池（果洛等）：承诺时间跨度常超过默认 480min，自动延长仿真窗口
+        try:
+            _cos = self.config.get('custom_orders') or []
+            if _cos:
+                _max_due = max(float(o.get('due_date') or 0) for o in _cos)
+                _max_ready = max(float(o.get('ready_time') or 0) for o in _cos)
+                need = max(_max_due, _max_ready) + 30.0
+                if need > self._simulation_time:
+                    self._simulation_time = float(need)
+        except Exception:
+            pass
+
         try:
             mult = float(self.config.get('SIMULATION_TIMEOUT_MULTIPLIER', DELIVERY_TIMEOUT_MULTIPLIER))
         except Exception:
