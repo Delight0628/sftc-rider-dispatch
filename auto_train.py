@@ -74,6 +74,10 @@ def start_log_parser_watcher(log_file_path: str, cwd: str = None, poll_interval_
     except (OSError, TypeError) as e:
         print(f"Warning: Failed to resolve absolute path for base_dir: {e}", flush=True)
     script_path = os.path.join(base_dir, "log_parser.py")
+    if not os.path.exists(script_path):
+        alt = os.path.join(os.path.dirname(os.path.abspath(__file__)), "supervisor", "log_parser.py")
+        if os.path.exists(alt):
+            script_path = alt
     try:
         script_path = os.path.abspath(script_path)
     except (OSError, TypeError) as e:
@@ -237,26 +241,63 @@ def launch_background_process(args):
     """
     print(f"✨ 自动化脚本启动器PID: {os.getpid()}", flush=True)
 
-    # 1. 创建主目录
+    # 可选：预设并行 worker 数（内存紧张时用 --workers 5）
+    if getattr(args, "workers", None):
+        try:
+            import re
+            cfg_path = Path("environments/w_factory_config.py")
+            text = cfg_path.read_text(encoding="utf-8")
+            text2, n = re.subn(
+                r'("num_parallel_workers"\s*:\s*)\d+',
+                rf'\g<1>{int(args.workers)}',
+                text,
+                count=1,
+            )
+            if n:
+                cfg_path.write_text(text2, encoding="utf-8")
+                print(f"⚙️  num_parallel_workers -> {int(args.workers)}", flush=True)
+        except Exception as e:
+            print(f"⚠️  修改 worker 数失败: {e}", flush=True)
+
+    # 1. 创建主目录（固定落在 runs/ 下，与代码同路径，便于跨重启持久化）
     now = datetime.datetime.now()
     safe_folder_name = args.folder_name.replace(" ", "_").replace("/", "-")
-    main_dir_name = now.strftime('%m%d_%H%M') + '_' + safe_folder_name
+    run_stamp = now.strftime('%m%d_%H%M') + '_' + safe_folder_name
+    runs_root = os.path.abspath("runs")
+    os.makedirs(runs_root, exist_ok=True)
+    main_dir_name = os.path.join("runs", run_stamp)
     os.makedirs(main_dir_name, exist_ok=True)
+    # 最新 run 软链，供备份脚本 / 监督器定位
+    try:
+        latest = os.path.join(runs_root, "latest")
+        if os.path.islink(latest) or os.path.exists(latest):
+            try:
+                os.remove(latest)
+            except OSError:
+                pass
+        os.symlink(os.path.abspath(main_dir_name), latest, target_is_directory=True)
+    except OSError as e:
+        print(f"⚠️  更新 runs/latest 失败: {e}", flush=True)
 
-    # 1.1. 复制关键脚本
+    # 1.1. 复制关键脚本（随 run 归档，便于复现）
     files_to_copy = [
         'environments/w_factory_config.py',
         'environments/w_factory_env.py',
+        'environments/delivery_config.py',
+        'environments/delivery_env.py',
+        'environments/real_data_loader.py',
+        'environments/real_data_schema.py',
         'mappo/ppo_marl_train.py',
         'mappo/ppo_network.py',
         'mappo/ppo_buffer.py',
         'mappo/ppo_worker.py',
         'mappo/ppo_trainer.py',
         'mappo/sampling_utils.py',
-        'debug_marl_behavior.py',
-        'evaluation.py',
-        'plotting.py',
-        'log_parser.py'
+        'evaluation_delivery.py',
+        'log_parser.py',
+        'supervisor/log_parser.py',
+        'supervisor/metrics_recorder.py',
+        'supervisor/episode_logger.py',
     ]
     print(f"📋 正在复制 {len(files_to_copy)} 个关键脚本到 '{main_dir_name}'...", flush=True)
     for file_path in files_to_copy:
@@ -441,6 +482,10 @@ def main():
         "--real-max-pool", type=int, default=2000,
         help="真实订单池加载上限"
     )
+    parser.add_argument(
+        "--workers", type=int, default=None,
+        help="并行采样 worker 数（写入 w_factory_config；默认不改配置）"
+    )
     args = parser.parse_args()
 
     if args.internal_run:
@@ -453,6 +498,6 @@ def main():
 if __name__ == "__main__":
     # 确保脚本从项目根目录运行
     if not os.path.exists('mappo/ppo_marl_train.py'):
-        print("❌ 错误: 此脚本必须从 'MARL_FOR_W_Factory' 项目根目录运行。", flush=True)
+        print("❌ 错误: 此脚本必须从 sftc-rider-dispatch 项目根目录运行。", flush=True)
         sys.exit(1)
     main()

@@ -43,6 +43,7 @@
 # Python scripts
 !auto_train.py
 !evaluation_delivery.py
+!log_parser.py
 
 # MARL 模块
 !mappo/ppo_buffer.py
