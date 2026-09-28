@@ -53,6 +53,8 @@
 
 # Documentation
 !README.md
+!docs/
+!docs/design_variable_riders_orders.md
 !AGENTS.md
 
 # Dependencies
