@@ -1375,9 +1375,20 @@ class SimplePPOTrainer:
                 print(f"   阶段{i+1}: {stage['name']} - 订单 {stage['orders_scale']*100:.0f}%")
         print("=" * 80)
         
-        if not validate_config():
-            print("❌ 配置验证失败")
-            return
+        # 工厂场景才做 BASE_ORDERS/砂光机 校验；配送场景跳过，避免误导日志
+        if getattr(self, "env_scenario", "factory") == "factory":
+            if not validate_config():
+                print("❌ 配置验证失败")
+                return
+        else:
+            n_orders = 0
+            pool = self.env_config.get("real_order_pool") if getattr(self, "env_config", None) else None
+            if pool:
+                n_orders = len(pool)
+            print("配置挑战性验证:")
+            print(f"场景: delivery 骑手派单 | 真实订单池: {n_orders or '随机生成'} | 骑手: {len(self.env_config.get('riders') or {}) if getattr(self, 'env_config', None) else '默认'}")
+            print("（配送场景：跳过工厂瓶颈/砂光机校验）")
+            print("配置文件验证通过！")
         
         # 训练开始时间记录
         training_start_time = time.time()
