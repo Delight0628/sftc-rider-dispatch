@@ -414,12 +414,16 @@ def load_rider_sample_rows(path: str | Path, max_rows: Optional[int] = None) -> 
 def sample_order_window(pool: List[Dict[str, Any]],
                         size: int,
                         seed: int = 0,
-                        rebase_time: bool = True) -> List[Dict[str, Any]]:
-    """从真实订单池按时间连续窗口采样，供训练 episode 使用。
+                        rebase_time: bool = True,
+                        prefer_urgent_window: bool = True) -> List[Dict[str, Any]]:
+    """从真实订单池采样训练 episode 窗口。
 
-    - pool 需已按 ready_time 升序（load_real_episode_config 输出满足）
-    - size <= len(pool) 时滑动窗口随机起点；否则整池拷贝
-    - rebase_time=True：窗口内 ready/due 平移到从 0 开始，避免大段空转
+    - **入池因果序**：窗口内按 ready_time 升序（订单何时可被派）。
+    - **截断/选窗不能只看 ready**：同时看 **due（最迟交期）**——
+      prefer_urgent_window=True 时，滑动窗口起点按「窗口内紧迫度」加权采样
+      （slack=due-ready 越紧、窗口内紧迫单越多，越容易被抽中），避免
+      总是抽到全是宽松单的时段。
+    - rebase_time=True：窗口内 ready/due 平移到从 0 开始。
     """
     import copy
     if not pool:
@@ -429,8 +433,28 @@ def sample_order_window(pool: List[Dict[str, Any]],
         orders = copy.deepcopy(list(pool))
     else:
         rng = np.random.RandomState(seed)
-        start = int(rng.randint(0, len(pool) - size + 1))
+        n_start = len(pool) - size + 1
+        if prefer_urgent_window:
+            # 每个候选起点的紧迫度：窗口内 min slack 与紧单占比
+            weights = np.zeros(n_start, dtype=np.float64)
+            slacks = np.array([
+                float(o.get("due_date", 0.0) or 0.0) - float(o.get("ready_time", 0.0) or 0.0)
+                for o in pool
+            ], dtype=np.float64)
+            for s in range(n_start):
+                w_slack = slacks[s:s + size]
+                # slack 越小越紧 → 用 rank 变换
+                tight_frac = float((w_slack < np.median(slacks)).mean())
+                min_s = float(w_slack.min()) if w_slack.size else 0.0
+                weights[s] = 0.35 + 0.45 * tight_frac + 0.20 * (1.0 / (1.0 + max(0.0, min_s)))
+            weights = weights / weights.sum()
+            start = int(rng.choice(n_start, p=weights))
+        else:
+            start = int(rng.randint(0, n_start))
         orders = copy.deepcopy(pool[start:start + size])
+    # 窗口内仍按 ready 保持因果入池序
+    orders.sort(key=lambda o: (float(o.get("ready_time", 0.0) or 0.0),
+                               float(o.get("due_date", 0.0) or 0.0)))
     if rebase_time and orders:
         t0 = min(float(o.get("ready_time", 0.0) or 0.0) for o in orders)
         if t0 > 1e-6:

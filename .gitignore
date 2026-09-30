@@ -63,6 +63,7 @@
 !docs/
 !docs/design_variable_riders_orders.md
 !AGENTS.md
+!project.md
 
 # Dependencies
 !requirements.txt

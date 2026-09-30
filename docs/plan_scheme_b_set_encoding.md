@@ -1,7 +1,7 @@
 # 方案 B 实现计划：集合编码（DeepSets / Attention）变长骑手·订单
 
 > 状态：**实现中**（代码见 `mappo/set_encoder.py`、`mappo/ppo_network_set.py`、`environments/set_obs.py`）。  
-> 对照：`docs/design_variable_riders_orders.md`（草稿）；定稿后回写 `AGENTS.md`。  
+> 对照：`docs/design_variable_riders_orders.md`（草稿）；定稿后回写 `project.md`。  
 > 原则：**不建模路径互扰**；订单保留 **due / 到达序**；旧 146 维路径**并行保留**。
 
 ---
