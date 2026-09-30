@@ -36,9 +36,11 @@
 
 1. 骑手数 N 如何进网络？  
    - A：`N_max` padding + mask（身份 one-hot 改属性）  
-   - B：集合编码（DeepSets/Attention）  
+   - B：集合编码（DeepSets/Attention）→ **实现计划见 `plan_scheme_b_set_encoding.md`（2026-09-30 起 P0）**  
 2. 订单时间序在观测里的表达：绝对 due？相对 slack？到达 rank？  
+   → set 观测已含 `due_rel` + `arrive_rank_norm`（`environments/set_obs.py`）  
 3. 训练数据：固定 5 人切片 vs 多尺度 N 采样  
+   → 计划 P2；当前 `config['riders']` 可注入 N≠5，flat 146 仅绑 N=5  
 
 ---
 

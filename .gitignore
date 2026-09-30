@@ -23,6 +23,13 @@
 !checks/real_data_schema_check.py
 !checks/make_realistic_sample.py
 !checks/real_pool_train_check.py
+!checks/set_encoding_check.py
+
+# Scheme B
+!mappo/set_encoder.py
+!mappo/ppo_network_set.py
+!environments/set_obs.py
+!docs/plan_scheme_b_set_encoding.md
 
 # Schema field maps from DingTalk (no PII samples)
 !data/

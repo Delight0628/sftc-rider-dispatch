@@ -1160,7 +1160,15 @@ class DeliveryEnv(ParallelEnv):
                 for i, o in enumerate(rider.carry)
             ]
             infos[agent_id]['action_mask'] = self.sim._get_action_mask(rider_name)
+            # 方案 B：集合观测（obs_mode='set' 或调用方主动读取）
+            if self.config.get('obs_mode') == 'set':
+                infos[agent_id]['set_obs'] = self.get_set_observation(agent_id)
         return infos
+
+    def get_set_observation(self, agent_id: str) -> Dict[str, Any]:
+        """方案 B 结构化观测（骑手/候选/全局 set）。不改变 146 维 observation_space。"""
+        from .set_obs import build_set_obs
+        return build_set_obs(self.sim, agent_id)
 
     def reset(self, seed: Optional[int] = None, options: Optional[dict] = None):
         if seed is not None:
