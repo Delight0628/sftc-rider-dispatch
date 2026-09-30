@@ -71,8 +71,8 @@ if _HAS_TF:
                 tf.keras.layers.Dense(self.hidden, activation="relu"),
             ])
             self._logits = tf.keras.layers.Dense(self.action_dim, activation=None)
-            # 可学习偏好 bias（会议：紧迫优先，偏好只让一小部分自由度）
-            self._pref_bias_scale = tf.Variable(0.1, trainable=True, name="pref_bias_scale")
+            # 注：不设偏好 bias。骑手×订单意愿原表不存在，偏好由并行双塔侧处理，
+            # 本网络只学时间紧迫性维度的派单策略。
 
             # ---------- Critic ----------
             self._c_rider = MaskedDeepSets((self.hidden, self.hidden), (self.hidden,))
@@ -109,17 +109,8 @@ if _HAS_TF:
                                  mask_self[:, None, :], training=training)
             ctx = ctx[:, 0, :]                                             # [B, H]
             fused = tf.concat([q, ctx], axis=-1)
-            # 轻量偏好 bias：候选 willingness 均值 → 非 IDLE 维（会议：少量偏好自由度）
-            w = cand_self[:, :, 1]
-            wm = tf.cast(mask_self, w.dtype)
-            w_mean = tf.reduce_sum(w * wm, axis=-1) / tf.clip_by_value(
-                tf.reduce_sum(wm, axis=-1), 1e-6, 1e9)
-            logits = self._logits(fused, training=training)
-            pref = self._pref_bias_scale * (w_mean * 2.0 - 1.0)             # [B]
-            pref = tf.expand_dims(pref, -1)                                # [B,1]
-            zeros = tf.zeros_like(logits[:, :1])
-            logits = tf.concat([zeros, logits[:, 1:] + pref], axis=-1)
-            return logits
+            # 纯紧迫维度策略：不注入骑手偏好/willingness
+            return self._logits(fused, training=training)
 
         def critic_forward(self, rider_feat, rider_mask,
                            pool_feat, pool_mask, global_feat, training=False):

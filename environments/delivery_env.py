@@ -657,7 +657,9 @@ class DeliverySim:
             slack = o.due_date - est["deliver_time"]
             row = [
                 1.0,                                                                       # exists
-                self._willingness_for(rider_name, o),                                      # [1] 上游精排意愿分
+                # [1] due 相对时间（紧迫维度）——原意愿槽；原表无骑手×订单意愿字段，
+                #     偏好由并行双塔侧处理，MAPPO 不融合意愿
+                float(np.clip((o.due_date - now) / slack_norm, -1.0, 3.0)),
                 self._compressed(est["total_time"], float(obs_cfg.get("total_remaining_time_norm", 120.0))),
                 self._compressed(est["leg1_time"], float(obs_cfg.get("max_op_duration_norm", 60.0))),  # ≈opdur
                 self._pickup_congestion(o),                                                # ≈downstream_congestion
@@ -1072,7 +1074,7 @@ class DeliveryEnv(ParallelEnv):
                 'pickup_zone_congestion', 'priority', 'is_urgent'],
             'queue_summary_stat_names': ['min', 'max', 'mean', 'std', 'median'],
             'candidate_feature_names': [
-                'exists', 'upstream_willingness', 'total_route_time', 'to_pickup_time',
+                'exists', 'due_rel', 'total_route_time', 'to_pickup_time',
                 'pickup_zone_congestion', 'priority', 'is_urgent', 'order_type',
                 'time_pressure', 'slack'],
             'normalization_constants': {

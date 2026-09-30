@@ -186,11 +186,12 @@ DELIVERY_OBS_CONFIG = {
 }
 
 # 候选订单 10 维特征（索引必须与 ppo_network BC 教师对齐；教师只用 [0][3][8]）：
-# [0]exists [1]willingness(上游精排意愿分) [2]total_route_time [3]to_pickup_time(≈opdur)
+# [0]exists [1]due_rel(紧迫：相对截止) [2]total_route_time [3]to_pickup_time(≈opdur)
 # [4]pickup_zone_congestion [5]priority [6]is_urgent [7]order_type_id
 # [8]time_pressure [9]slack
-# 说明：配送场景"剩余段数"恒为 2（取+送），原 [1]remaining_legs 是常量、无信息量，
-#       故复用为上游（双塔+W&D）精排意愿分 —— 既满足会议"输入层适配"，又不改动 146 维布局。
+# 【架构 2026-09-30 更正】MAPPO 与双塔**并行**，不在策略内融合骑手偏好/意愿。
+# 原表无「骑手×订单」意愿字段（小新核实）；偏好由双塔侧独立算，结果在外部加权融合。
+# 原 [1] willingness 槽改为 due_rel。
 DELIVERY_ACTION_CONFIG = {
     "action_names": ["IDLE"] + [f"CANDIDATE_{i}" for i in range(1, 11)],
 }

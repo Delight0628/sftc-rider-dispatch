@@ -80,7 +80,6 @@ def build_set_obs(sim, agent_id: str) -> Dict[str, Any]:
         o = c["order"]
         est = sim._estimate_route(me, o, pos, start)
         slack = float(o.due_date - est["deliver_time"])
-        w = sim._willingness_for(rider_name, o)
         due_rel = float(o.due_date - now)
         # 到达序：池内按 ready_time 排名（0=最早）
         rank = 0.0
@@ -90,9 +89,10 @@ def build_set_obs(sim, agent_id: str) -> Dict[str, Any]:
                 if oo is o:
                     rank = ri / max(1, len(order_sorted))
                     break
+        # 偏好/willingness 不入模（原表无骑手×订单意愿字段；偏好由并行双塔侧处理）
         cand_feat[self_idx, j] = [
             1.0,
-            float(w),
+            float(np.clip(due_rel / route_norm, -1.0, 3.0)),  # [1] due 相对（紧迫）
             _compressed(est["leg1_time"], op_norm),
             _compressed(est["total_time"], route_norm),
             sim._pickup_congestion(o),

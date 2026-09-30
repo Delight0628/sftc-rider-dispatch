@@ -133,25 +133,17 @@ def check_obs_alignment(ck: Checker):
     cand_start = 42
     ok = True
     detail = []
+    now = env.sim.current_time
+    slack_norm = float(env.sim._obs_cfg.get("slack_time_norm", 120.0))
     for c in cands:
         idx = c["index"]
-        w_env = env.sim._willingness_for("骑手A", c["order"])
+        o = c["order"]
+        due_rel = float(np.clip((o.due_date - now) / slack_norm, -1.0, 3.0))
         slot = float(state[cand_start + idx * 10 + 1])
-        if abs(slot - w_env) > 1e-5:
+        if abs(slot - due_rel) > 1e-5:
             ok = False
-            detail.append(f"idx{idx}: slot={slot} w={w_env}")
-    ck.check("每个候选 [1] 位=意愿分", ok, "; ".join(detail) or "ok")
-    # 未上游覆盖的订单用 heuristic
-    other = [c for c in cands if c["order"].order_id not in (0, 1)]
-    if other:
-        o = other[0]["order"]
-        expect = heuristic_willingness({
-            "order_type": o.order_type, "priority": o.priority, "weight": o.weight,
-        })
-        got = env.sim._willingness_for("骑手A", o)
-        ck.check("未覆盖订单走 heuristic", abs(expect - got) < 1e-6, f"{expect} vs {got}")
-    else:
-        ck.check("存在未覆盖订单", False, "all candidates from upstream")
+            detail.append(f"idx{idx}: slot={slot} due_rel={due_rel}")
+    ck.check("每个候选 [1] 位=due_rel（无意愿字段）", ok, "; ".join(detail) or "ok")
 
 
 def check_urgency_over_willingness(ck: Checker):
