@@ -14,7 +14,7 @@ from environments.delivery_env import DeliveryEnv  # noqa: E402
 from environments.set_obs import (  # noqa: E402
     build_set_obs, build_global_set_state, RIDER_FEAT_DIM, CAND_FEAT_DIM, GLOBAL_FEAT_DIM,
 )
-from mappo.set_encoder import (  # noqa: E402
+from hybrid.set_encoder import (  # noqa: E402
     np_deepsets, np_cross_attention, np_masked_mean, _HAS_TF,
 )
 
@@ -112,27 +112,42 @@ def main():
     env.reset(seed=1)
     ck.check("infos.set_obs", "set_obs" in env.infos[env.agents[0]])
 
-    print("\n[4] TF 网络（可选）")
+    print("\n[4] TF 边效用网络（可选；原 PPONetworkSet 已随 MAPPO 归档）")
     if _HAS_TF:
-        from mappo.ppo_network_set import PPONetworkSet
         import tensorflow as tf
-        net = PPONetworkSet(
-            rider_dim=RIDER_FEAT_DIM, cand_dim=CAND_FEAT_DIM,
-            global_dim=GLOBAL_FEAT_DIM, num_candidates=10, action_dim=11, lr=1e-4,
-        )
+        from hybrid.edge_value_net import EdgeValueNet, NEG_INF
+        net = EdgeValueNet(hidden=64, num_heads=4)
         B, N, K = 2, 5, 10
-        rf = tf.random.normal([B, N, RIDER_FEAT_DIM])
-        rm = tf.ones([B, N])
-        cf = tf.random.normal([B, N, K, CAND_FEAT_DIM])
-        cm = tf.ones([B, N, K])
-        gf = tf.random.normal([B, GLOBAL_FEAT_DIM])
-        si = tf.constant([0, 1])
-        logits = net.actor_forward(rf, rm, si, cf, cm, gf)
-        ck.check("actor logits [B,11]", tuple(logits.shape) == (B, 11), str(logits.shape))
-        pf = tf.random.normal([B, 32, 6])
-        pm = tf.ones([B, 32])
-        v = net.critic_forward(rf, rm, pf, pm, gf)
-        ck.check("critic V [B]", tuple(v.shape) == (B,), str(v.shape))
+        inputs = {
+            "rider_feat": tf.random.normal([B, N, RIDER_FEAT_DIM]),
+            "rider_mask": tf.ones([B, N]),
+            "cand_feat": tf.random.normal([B, N, K, CAND_FEAT_DIM]),
+            "cand_mask": tf.ones([B, N, K]),
+            "edge_feat": tf.random.normal([B, N, K, 12]),
+            "global_feat": tf.random.normal([B, GLOBAL_FEAT_DIM]),
+        }
+        q = net(inputs, training=False)
+        ck.check("q [B,N,K]", tuple(q.shape) == (B, N, K), str(q.shape))
+        # cand_mask=0 处应为 -1e9
+        inputs2 = dict(inputs)
+        cm2 = np.ones((B, N, K), np.float32)
+        cm2[:, :, -2:] = 0.0
+        inputs2["cand_mask"] = tf.constant(cm2)
+        q2 = net(inputs2, training=False).numpy()
+        ck.check("mask 屏蔽 -1e9", bool((q2[:, :, -2:] <= NEG_INF / 10).all()),
+                 str(q2[:, :, -2:].max()))
+        # warm-start 后 q ≡ 线性先验（§3.3 parity 基础）
+        from environments.delivery_config import HYBRID_DISPATCH_CONFIG
+        net.warm_start_from_linear()
+        ef = tf.constant(np.random.RandomState(0).randn(1, 1, 1, 12).astype(np.float32))
+        inputs3 = {k: v[:1, :1] if k != "global_feat" else v[:1] for k, v in inputs.items()}
+        inputs3 = {k: (v[:, :, :1] if k in ("cand_feat", "cand_mask", "edge_feat") else v)
+                   for k, v in inputs3.items()}
+        inputs3["edge_feat"] = ef
+        q3 = float(net(inputs3, training=False).numpy()[0, 0, 0])
+        lin = float(np.dot(ef.numpy()[0, 0, 0],
+                           np.asarray(HYBRID_DISPATCH_CONFIG["edge_weights"], np.float32)))
+        ck.check("warm-start q≡线性先验", abs(q3 - lin) < 1e-3, f"q={q3} lin={lin}")
     else:
         ck.check("TF 不可用（跳过构图）", True)
 

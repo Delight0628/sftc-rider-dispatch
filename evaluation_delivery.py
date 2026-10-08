@@ -8,6 +8,8 @@
 - nearest   ：优先接 to_pickup_time 最短的合法候选
 - edd       ：优先接 slack 最小（最紧迫）的合法候选
 - random    ：合法动作均匀随机（对照）
+- hybrid    ：混合派单框架（学习边效用 + 约束二分图匹配 + 滚动重优化，
+              见 environments/hybrid_dispatch.py，联合决策非逐骑手贪心）
 
 用法：
   python evaluation_delivery.py --baseline edd --episodes 5
@@ -77,13 +79,26 @@ def _pick_by_baseline(infos_agent: dict, baseline: str, rng: np.random.RandomSta
 
 
 def run_episode(env: DeliveryEnv, baseline: str, rng: np.random.RandomState,
-                max_steps: int = 800) -> Dict:
+                max_steps: int = 800, hybrid_scorer: str = "linear") -> Dict:
     obs, infos = env.reset()
+    hybrid = None
+    if baseline == "hybrid":
+        from environments.hybrid_dispatch import HybridDispatcher
+        if hybrid_scorer and hybrid_scorer != "linear":
+            # 训练产物（edge_net npz）：集中式神经边效用（纯 numpy 推理，无需 TF）
+            from hybrid.scorers import NeuralEdgeScorer
+            hybrid = HybridDispatcher(
+                env, batch_scorer=NeuralEdgeScorer(npz_path=hybrid_scorer))
+        else:
+            hybrid = HybridDispatcher(env, config={"learn": False})
     steps = 0
     for _ in range(max_steps):
-        actions = {}
-        for agent in env.agents:
-            actions[agent] = _pick_by_baseline(env.infos[agent], baseline, rng)
+        if hybrid is not None:
+            actions = hybrid.act()
+        else:
+            actions = {}
+            for agent in env.agents:
+                actions[agent] = _pick_by_baseline(env.infos[agent], baseline, rng)
         obs, rewards, terms, truncs, infos = env.step(actions)
         steps += 1
         if all(terms.values()) or all(truncs.values()):
@@ -99,7 +114,8 @@ def evaluate_baseline(baseline: str, episodes: int = 5, seed: int = 0,
                       upstream_order_by: str = "urgency",
                       use_fixed_orders: bool = True,
                       real_order_path: str = "",
-                      real_rider_path: str = "") -> Dict:
+                      real_rider_path: str = "",
+                      hybrid_scorer: str = "linear") -> Dict:
     rng = np.random.RandomState(seed)
     rows: List[Dict] = []
     for ep in range(episodes):
@@ -145,7 +161,7 @@ def evaluate_baseline(baseline: str, episodes: int = 5, seed: int = 0,
             }
         env = DeliveryEnv(cfg)
         env.reset(seed=ep_seed)
-        stats = run_episode(env, baseline, rng)
+        stats = run_episode(env, baseline, rng, hybrid_scorer=hybrid_scorer)
         rows.append(stats)
 
     def _mean(key: str) -> float:
@@ -193,7 +209,7 @@ def try_model_baseline(model_path: str, episodes: int = 3, seed: int = 0) -> Opt
 def main():
     parser = argparse.ArgumentParser(description="配送场景启发式基线评估")
     parser.add_argument("--baseline", type=str, default="all",
-                        choices=["all", "idle", "fifo", "nearest", "edd", "random"],
+                        choices=["all", "idle", "fifo", "nearest", "edd", "random", "hybrid"],
                         help="基线策略")
     parser.add_argument("--episodes", type=int, default=5)
     parser.add_argument("--seed", type=int, default=0)
@@ -209,9 +225,12 @@ def main():
                         help="可选：dwd_fact_order_whole 导出样本 CSV/JSON 路径")
     parser.add_argument("--real-riders", type=str, default="",
                         help="可选：dim_rider_single 导出样本路径")
+    parser.add_argument("--hybrid-scorer", type=str, default="linear",
+                        help="baseline=hybrid 时的打分器：linear（手调先验，默认）或 "
+                             "edge_net_best.npz 等训练产物路径（纯 numpy 推理）")
     args = parser.parse_args()
 
-    baselines = ["idle", "fifo", "nearest", "edd", "random"] if args.baseline == "all" else [args.baseline]
+    baselines = ["idle", "fifo", "nearest", "edd", "random", "hybrid"] if args.baseline == "all" else [args.baseline]
     results = []
     print("=" * 72)
     src = "real" if args.real_orders else "mock"
@@ -226,6 +245,7 @@ def main():
             upstream_order_by=args.upstream_order_by,
             real_order_path=args.real_orders,
             real_rider_path=args.real_riders,
+            hybrid_scorer=args.hybrid_scorer,
         )
         results.append(s)
         print(f"  completion={s['completion_rate']:.3f}  on_time={s['on_time_rate']:.3f}  "

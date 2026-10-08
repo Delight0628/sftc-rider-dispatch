@@ -1,4 +1,4 @@
-# project.md — Rider Dispatch MAPPO（项目总图）
+# project.md — Rider Dispatch Hybrid（项目总图）
 
 > **给后续对话中的 Agent**：开工前先读本文件；训练目的、观测约束、数据口径、展示形态变更后**必须回写本节**。  
 > （原名 `AGENTS.md`，2026-09-30 起改为 `project.md`，**每次会话维护本文件**。）  
@@ -15,34 +15,37 @@
 └───────────────────────────┬─────────────────────────────────────┘
                             ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  仿真层  DeliverySim / DeliveryEnv                               │
+│  仿真层  DeliverySim / DeliveryEnv（未改）                        │
 │          取→送两段、共享池、事件推进、due/slack 奖励              │
-│          观测：146 维（N=5）∥ set 观测（N 可变，方案 B）          │
+│          set 观测：rider[N,8] × cand[N,K,12] × global[5]         │
 └───────────────┬─────────────────────────────┬───────────────────┘
                 ▼                             ▼
 ┌──────────────────────────┐   ┌──────────────────────────────────┐
-│ 训练层 MAPPO + CTDE      │   │ 评估层 基线/KPI/离线对照          │
-│ Actor: 分布式 per 骑手   │   │ 完成率·准时·单均迟到·util·里程   │
-│ Critic: 集中式全局 V     │   │ evaluation_delivery + checks      │
-│ PPO clip + GAE（未改）   │   └──────────────────────────────────┘
+│ 训练层 Hybrid（本仓主干） │   │ 评估层 基线/KPI/离线对照          │
+│ ① 边效用网络 q(骑手,订单) │   │ 完成率·准时·单均迟到·util·里程   │
+│    集合编码+注意力(TF)    │   │ evaluation_delivery + checks      │
+│ ② off-policy n-step TD    │   │ hybrid/evaluate 对拍矩阵          │
+│ ③ 约束二分图匹配(不可微)  │   │ 铁律：必须赢 nearest/EDD/fifo    │
+│ ④ 滚动重优化(事件驱动)    │   └──────────────────────────────────┘
 └───────────────┬──────────┘
                 ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │  输出  每骑手「紧迫维度」订单 list                               │
 │  ════════════════════════════════════════════════                │
-│  外部融合（非本仓）：双塔偏好 list  ⊕  MAPPO 紧迫 list            │
+│  外部融合（非本仓）：双塔偏好 list  ⊕  本仓紧迫 list              │
 │                 → 实时订单 list → **Live 调度大屏**（最终展示）   │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-**MAPPO / CTDE 主体未改**：仍是多智能体 Actor-Critic、集中训练分散执行、PPO+GAE。  
-变的是：① 不再融合「骑手偏好/意愿」进策略（并行双塔侧负责）；② 方案 B 可选变长观测。
+**范式（2026-10-08 起）**：**Hybrid = 学习边效用 + 约束二分图匹配 + 滚动重优化**（DiDi KDD 2018/2019/2022、Meituan SCDN 工业范式）。  
+原 MAPPO/CTDE 栈已归档至 `archive/mappo/`（冻结，仅作历史对照，不再维护）。  
+理论依据与路线对比见 `docs/research_dispatch_algorithm_survey.md`；实现细节见 `docs/hybrid_implementation.md`。
 
 ---
 
 ## 1. 项目一句话
 
-用 **MAPPO（CTDE）** 学出骑手派单策略：**多接、准点、少闲置**；只做**时间紧迫性**维度，偏好由并行双塔处理，结果外部加权，最终上 **Live 调度大屏**。
+用 **Hybrid 派单框架**（边效用网络 + off-policy TD + 二分图匹配）学出骑手派单策略：**多接、准点、少闲置**；只做**时间紧迫性**维度，偏好由并行双塔处理，结果外部加权，最终上 **Live 调度大屏**。
 
 ---
 
@@ -66,66 +69,56 @@
 ```text
                     ┌─ 双塔（王新春侧）：骑手偏好维度 → 每骑手订单 list
 业务输入 ──────────┤
-                    └─ MAPPO（本仓库）：时间紧迫性维度 → 每骑手订单 list
+                    └─ Hybrid（本仓库）：时间紧迫性维度 → 每骑手订单 list
                               ↓
               外部加权融合 → 每骑手实时订单 list（交付给调度/前端）
 ```
 
 - **不是**串行下游，**不消费**双塔 `willingness`；两模型 **并行独立** 产出，在外部加权融合。
-- 原表 **无**「骑手×订单」意愿字段（笛卡尔积需事后算）；偏好 **不进** MAPPO 观测/策略。
+- 原表 **无**「骑手×订单」意愿字段（笛卡尔积需事后算）；偏好 **不进** 本仓观测/打分。
 - 本仓库只做 **时间紧迫性** 派单（due/slack/time_pressure）；偏好归双塔。
-- 历史（09-14/09-30）「上游→MAPPO 级联 + 意愿特征」口径 **已作废**；`upstream_candidates.willingness` 仅作实验注入位，**不入策略**。
+- 历史（09-14/09-30）「上游→策略级联 + 意愿特征」口径 **已作废**；`upstream_candidates.willingness` 仅作实验注入位，**不入打分**。
 
 ---
 
-## 4. 训练形式化（MAPPO / CTDE 在学什么 —— 架构主体不变）
+## 4. 训练形式化（Hybrid 在学什么）
 
 | 维度 | 定义 |
 |------|------|
-| 范式 | **CTDE**：Actor 分布式（每骑手），Critic 集中式（全局状态） |
-| 优化 | **MAPPO** = Multi-Agent PPO（clip + GAE）— **未改动** |
-| 智能体 | 每骑手一个 Actor；**N 不是永远 5**（见下） |
-| 状态 146 维 | 自身 8 + 全局 4 + 池摘要 30 + 候选 10×10 + 未来订单 4（**N=5 约定**） |
-| 候选特征 [1] | **due_rel**（紧迫）；**无意愿/willingness** |
-| 动作 | 每骑手：候选 10 选 1 或 IDLE |
-| 奖励 | 送达 + 准时 − 超时 Huber − 闲置/无效 + 终局 bonus |
+| 范式 | **单智能体 RL（组合动作）+ 组合解码**：学习边效用，匹配层保证可行性 |
+| 学习信号 | **off-policy n-step TD**（fitted-Q 式 MSE，n=5，γ=0.99，目标网络软更新 τ=0.005） |
+| 学的东西 | 边效用 `q(骑手i, 订单j | 全局上下文)`（不是策略 logits） |
+| 决策 | 每个决策 epoch：边打分 → 约束二分图匹配（带容量分轮）→ 滚动重优化 |
+| 状态 | set 观测：rider_feat `[N,8]` + cand_feat `[N,K,12]` + global_feat `[5]` + edge_feat `[N,K,12]` |
+| 动作 | 匹配结果 → 每骑手候选下标动作（经 `env.step` 落地，FIFO carry） |
+| 信用分配 | 边级：订单履约的 realized_utility 回填到派单时刻的边（非全局均摊） |
+| 探索 | 温度 τ=0.5 softmax 边采样 + 贪心匹配（行为策略） |
 
-### 骑手数 N（回答「每一步还是五个骑手吗」）
+### 骑手数 N
 
 | 场景 | N | 说明 |
 |------|---|------|
-| 146 维训练（现行默认） | **5** | one-hot/全局维写死；`max_riders=5` 切片 |
-| 方案 B set 路径 | **可变**（已测 3/5/8） | mask 聚合，不限一人一码 |
-| 业务站点 | 每站 N 在线骑手动态进出 | 复制权重到各站；P2 多尺度 N 采样 |
-| 果洛样本 | 名单 200，当日完单 ~22 | 不是每 episode 都 5 个「真」骑手 ID |
+| Hybrid 主干 | **可变**（已测 3/5/8） | 集合编码 + mask 聚合，无 one-hot 宽度约束 |
+| 业务站点 | 每站 N 在线骑手动态进出 | 同一边效用网络直接泛化 |
+| 果洛样本 | 名单 200，当日完单 ~22 | episode 窗口注入 |
 
-**结论**：仿真决策步里在线骑手 = 当前 env 配置的 agent 数；**146 路径锁 5，set 路径 N 可变**。不是业务永远只有 5 人。
+### 观测布局
 
-### 观测布局（勿随意改维）
-
-```text
-146 = 自身 8 + 全局 4 + 池摘要 30 + 候选 10×10 + 未来订单 4
-      ↑ one-hot 5 绑定骑手数；改 N 会牵动网络 / BC 教师 / 146 约定
-```
-
-**骑手数 = 5 的原因（历史折衷）**
-
-- 从工厂 5 工位对齐迁来；one-hot / 全局维写死宽度。
-- 真实果洛有 ~200 骑手，仿真只注入 **前 5**（`real_data_loader.build_rider_configs(max_riders=5)`）。
-- **业务上骑手应可变**；正确演进是 padding+mask 或集合编码（须重训）。未升级前 **不要改 max_riders**。
+- **主干（hybrid）**：set 观测，N/K 可变，mask float32（1=有效），见 `environments/set_obs.py`。
+- **146 维固定观测**：随 MAPPO 归档，仅 `DeliveryEnv` 保留产出能力（历史对照），**不再用于训练**。
 
 ---
 
-## 5. 两阶段训练在练什么
+## 5. 训练在练什么
 
 | 阶段 | 数据 | 目的 |
 |------|------|------|
-| **Foundation** | 随机单 / 果洛真实单 + mock 或上游候选 | 按时接单、少超时、送得完 |
-| **Generalization** | + 骑手离线 / 紧急订单 | **鲁棒性**，不背样本 |
+| **Foundation** | 随机单 / 果洛真实单窗口 | 按时接单、少超时、送得完 |
+| **鲁棒性** | + 骑手离线 / 紧急订单（域随机化） | 不背样本 |
 
-- 混训：`multi_task_mixing.base_worker_fraction`（当前 0.40），部分 worker 跑 BASE 锚点任务。
 - 真实 xlsx：吃 **真实坐标、时间、完成分布**，不是理想 mock。
-- Early-stop：基础连续 8 次、泛化连续 10 次达标可提前结束（`target_score` 等在 `DELIVERY_TRAINING_FLOW_CONFIG`）。
+- Early-stop：对拍评估连续 2 轮不赢 linear hybrid 基线 → 回滚最近赢的 checkpoint。
+- 评估铁律：**neural ≥ linear hybrid > 全部启发式（nearest/EDD/fifo）** 才算有效。
 
 ---
 
@@ -140,10 +133,10 @@
 | makespan | 15% | 相对仿真窗 |
 | 利用率 | 10% | 均值 |
 
-**有效信号**：完成率↑、延期↓、score 尖峰↑、actor loss 有更新、entropy 不塌。  
+**有效信号**：完成率↑、延期↓、score↑、TD loss 下降不 NaN、对拍矩阵中 neural 名次前移。  
 **无效陷阱**：只比 reward 绝对值（真单/假单量纲不同）；「少送单换零延期」在旧评分下虚高。
 
-分阶段看：BASE score 通常 > REAL；REAL 均分低不等于没学到。
+分阶段看：mock score 通常 > 真实样本；真实均分低不等于没学到。
 
 ---
 
@@ -180,7 +173,7 @@
 |------|------|
 | 地图/站点 | 当前站点骑手位置、订单取送点、热力/拥堵 |
 | 实时派单流 | 每骑手当前候选 list（融合后）、接单/送达事件 ticker |
-| 双模型融合条 | 偏好分（双塔）vs 紧迫分（MAPPO）与融合权重 |
+| 双模型融合条 | 偏好分（双塔）vs 紧迫分（本仓 hybrid）与融合权重 |
 | KPI 面板 | 完成率 / 准时率 / 单均迟到 / 利用率 / 在线 N |
 | 回放 | 拖动时间轴看策略决策序列（Gantt/时间线） |
 
@@ -199,15 +192,15 @@
 | ORION_TASK_IDLE_TIME | 约 1h 无**用户交互**会杀任务；后台 keepalive **无效**，需网页端偶发操作 |
 | BrokenProcessPool | 多为 idle 杀 worker 的**结果**，不是 OOM（以 dmesg + 日志时序为准） |
 | SSH | 密码易失败；优先网页终端 + JupyterLab 下载；启动用 `nohup` + `PYTHONUNBUFFERED=1` |
-| worker | `num_parallel_workers` 建议 ≤ cgroup CPU 配额；`start_train_remote.sh` 会按核数写回，防覆盖需直接启 python |
+| worker | `--num-parallel-workers` 建议 ≤ cgroup CPU 配额（start_train_remote.sh 自动探测） |
 
 推荐启动（网页终端）：
 
 ```bash
 cd /gemini/code/sftc-rider-dispatch
-# workers=5 写入 w_factory_config 后：
-nohup /root/miniconda3/bin/python -u mappo/ppo_marl_train.py \
-  --scenario delivery --candidate-source upstream \
+bash supervisor/start_train_remote.sh
+# 或手动：
+nohup /root/miniconda3/bin/python -u hybrid_train.py \
   --real-orders "骑手派单仿真样本_果洛藏族自治州_20260915_全量.xlsx" \
   --real-riders "骑手派单仿真样本_果洛藏族自治州_20260915_全量.xlsx" \
   --episode-order-size 40 \
@@ -220,17 +213,26 @@ nohup /root/miniconda3/bin/python -u mappo/ppo_marl_train.py \
 ## 9. 代码地图
 
 ```text
-environments/delivery_config.py   # 配送真理源：RIDERS/OBS/奖励/评分/上游契约
-environments/delivery_env.py      # DeliverySim + DeliveryEnv（146 维观测）
+environments/delivery_config.py   # 配送真理源：RIDERS/OBS/奖励/评分/HYBRID_*_CONFIG
+environments/delivery_env.py      # DeliverySim + DeliveryEnv（仿真层，未改）
+environments/hybrid_dispatch.py   # 边打分+二分图匹配+滚动重优化（推理主干，零 TF 依赖）
+environments/set_obs.py           # set 观测导出（含 build_all_pairs_set_obs）
 environments/real_data_*.py       # 真实样本 schema/loader
-mappo/ppo_marl_train.py           # CLI 入口（--scenario delivery / --real-*）
-mappo/ppo_trainer.py              # MAPPO 训练循环 + 指标/回合日志
-mappo/ppo_network.py              # Actor-Critic（146 入参）
+hybrid/set_encoder.py             # 集合编码算子（TF + numpy 双实现）
+hybrid/edge_value_net.py          # 边效用网络（TF/Keras + npz 导出降级）
+hybrid/scorers.py                 # Linear / Neural EdgeScorer（统一接口）
+hybrid/replay_buffer.py           # off-policy 经验回放（边级信用回填）
+hybrid/collect.py                 # episode 采集（温度采样行为策略，可并行）
+hybrid/trainer.py                 # n-step TD 训练循环 + early-stop 回滚
+hybrid/evaluate.py                # 对拍评估（neural/linear/启发式同口径）
+hybrid_train.py                   # CLI 入口（参数面对齐历史 ppo_marl_train.py）
+evaluation_delivery.py            # 基线对拍（--baseline hybrid --hybrid-scorer …）
+archive/mappo/                    # MAPPO/CTDE 历史栈（冻结，勿维护）
 supervisor/                       # 监督器、备份、启动脚本
 runs/                             # 远端训练产物（代码同路径）
 ```
 
-勿把工厂 `validate_config` 的「砂光机」横幅当配送诊断（delivery 已跳过，见 `ppo_trainer`）。
+勿把工厂 `validate_config` 的「砂光机」横幅当配送诊断（delivery 已跳过）。
 
 ---
 
@@ -238,20 +240,22 @@ runs/                             # 远端训练产物（代码同路径）
 
 | 限制 | 影响 | 路线 |
 |------|------|------|
-| 骑手固定 5 | 果洛 200 人只能切片 | 变长观测 padding+mask → 重训 |
+| 匹配层不可微 | 不能端到端 policy gradient | 已采用 fitted-Q（边效用回归） |
 | 真单 score 曾被延期打崩 | 策略「少送」 | 已改单均迟到；勿回退 |
 | Idle 杀任务 | 长训易断 | 平台非交互作业 / 保持网页活跃 |
 | 未 resume | 断点续训靠重跑 | 后续加 checkpoint resume |
+| 合单/再平衡未建模 | 一单一人 | P4 分层（上层是否等待/合单） |
 
 ---
 
 ## 11. Agent 协作约定
 
-1. **每次对话先读 `project.md`**（原 AGENTS.md）；改训练目标、观测维、评分、数据源、启动方式、展示形态后 **立即更新本文件**。
+1. **每次对话先读 `project.md`**；改训练目标、观测维、评分、数据源、启动方式、展示形态后 **立即更新本文件**。
 2. 汇报结论区分：**mock 联调** vs **真实样本训练**；注明 run 目录与 episode 数。
 3. 报资源用 **cgroup** 数字，不写宿主机 96 核/503G。
 4. 不提交密钥；SSH 密码只走环境变量 `TRAIN_SSH_PASSWORD`。
 5. 模型/日志只落 `runs/` 或本机 `training_backup/`，避免 `/quota`。
+6. `archive/` 下代码冻结，只读不改；新功能一律在 `hybrid/` 与 `environments/` 演进。
 
 ---
 
@@ -259,7 +263,9 @@ runs/                             # 远端训练产物（代码同路径）
 
 | 日期 | 变更 |
 |------|------|
-| 2026-09-30 | **AGENTS.md → project.md**；全景图；确认 MAPPO/CTDE 未改；定稿 Live 调度大屏；订单采样 ready+due；去偏好（并行双塔） |
+| 2026-10-08 | **MAPPO/CTDE 完全替换为 Hybrid 派单框架**（边效用网络+off-policy TD+约束匹配+滚动重优化）；mappo/ 与 auto_train.py 归档至 archive/；训练入口改 `hybrid_train.py`；观测主干改 set 观测（N 可变）；依据 `docs/research_dispatch_algorithm_survey.md` |
+| 2026-10-08 | **Hybrid 训练链路完成并全量校验通过**：hybrid/{edge_value_net,scorers,replay_buffer,collect,evaluate,trainer}.py + hybrid_train.py；checks 30/30、27/27、22/22、14/14；mock 冒烟 neural 0.9097≥linear 0.9095≫启发式 0.666；修复 warm-start ±x 双通道/目标网络硬拷贝/npz 键名/order_id int64 四个关键 bug |
+| 2026-09-30 | **AGENTS.md → project.md**；全景图；定稿 Live 调度大屏；订单采样 ready+due；去偏好（并行双塔） |
 | 2026-09-28 | 删除过时 `update.md`/截断样本与本地缓存；口径以本文件为准；评分改单均迟到；episode_order_size=40 |
 | 2026-09-27 | 产物改代码路径 runs/；监督器/备份；确认 ORION idle 为断训主因 |
 | 2026-09-25 | 每回合完整日志 + metrics.jsonl；本机面板 |

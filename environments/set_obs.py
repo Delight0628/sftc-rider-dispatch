@@ -186,3 +186,120 @@ def build_global_set_state(sim) -> Dict[str, Any]:
         "pool_mask": pool_mask,
         "global_feat": global_feat,
     }
+
+
+# =============================================================================
+# 集中式打分观测（hybrid 主干）：全对候选矩阵
+# 约定见 docs/hybrid_implementation.md §2
+# =============================================================================
+EDGE_FEAT_DIM = 12
+
+
+def build_all_pairs_set_obs(sim) -> Dict[str, Any]:
+    """集中式边打分的全对候选观测（hybrid 主干）。
+
+    与 build_set_obs 的差异：cand 轴对**每个骑手**都填充（非仅 self 行），
+    并额外给出 cand_order_ids / cand_actions / edge_feat，供匹配→动作映射
+    与经验回放对齐（docs/hybrid_implementation.md §2.2/§2.3）。
+
+    返回 dict：
+      rider_feat [N,8]  rider_mask [N]  global_feat [5]
+      cand_feat [N,K,12]  cand_mask [N,K]（1=该槽有效且动作合法，对齐 action_mask）
+      edge_feat [N,K,12]（与 EdgeScorer.build_features 逐维一致）
+      cand_order_ids [N,K] int32（-1=空槽）  cand_actions [N,K] int32（0=无）
+      rider_names List[str]
+    """
+    from environments.hybrid_dispatch import EdgeScorer  # 局部导入，避免模块耦合
+
+    names = list(sim.rider_names)
+    n = len(names)
+    now = float(sim.current_time)
+    grid = float(sim._geo.get("grid_size", 20.0))
+    k_max = int(sim._obs_cfg.get("num_candidate_orders", 10))
+    slack_norm = float(sim._obs_cfg.get("slack_time_norm", 120.0))
+    route_norm = float(sim._obs_cfg.get("total_remaining_time_norm", 120.0))
+    op_norm = float(sim._obs_cfg.get("max_op_duration_norm", 60.0))
+
+    rider_feat = np.zeros((n, RIDER_FEAT_DIM), dtype=np.float32)
+    rider_mask = np.zeros((n,), dtype=np.float32)
+    cand_feat = np.zeros((n, k_max, CAND_FEAT_DIM), dtype=np.float32)
+    cand_mask = np.zeros((n, k_max), dtype=np.float32)
+    edge_feat = np.zeros((n, k_max, EDGE_FEAT_DIM), dtype=np.float32)
+    cand_order_ids = np.full((n, k_max), -1, dtype=np.int64)
+    cand_actions = np.zeros((n, k_max), dtype=np.int32)
+
+    # 池内 ready 排名（rank 特征）
+    rank_of = {}
+    if sim.pool:
+        order_sorted = sorted(sim.pool, key=lambda x: (x.ready_time, x.order_id))
+        for ri, oo in enumerate(order_sorted):
+            rank_of[id(oo)] = ri / max(1, len(order_sorted))
+
+    for i, name in enumerate(names):
+        r = sim.riders[name]
+        offline = sim._rider_is_offline(r, now)
+        pos, free_t = r.projected_free()
+        free_delay = max(0.0, (free_t - now) if free_t > 0 else 0.0)
+        rider_feat[i] = [
+            len(r.carry) / max(1, r.capacity),
+            r.busy_time / max(1.0, now),
+            1.0 if offline else 0.0,
+            float(r.speed) / max(1e-6, float(sim._geo.get("speed_norm", 0.6))),
+            float(r.capacity) / 6.0,
+            _compressed(free_delay, 60.0),
+            float(pos[0]) / grid,
+            float(pos[1]) / grid,
+        ]
+        rider_mask[i] = 0.0 if offline else 1.0
+        if offline:
+            continue
+        can_take = len(r.carry) < r.capacity
+        start = max(now, free_t if free_t > 0 else now)
+        for c in sim._get_candidate_orders(name):
+            j = int(c["index"])
+            if j >= k_max:
+                continue
+            o = c["order"]
+            est = sim._estimate_route(r, o, pos, start)
+            slack = float(o.due_date - est["deliver_time"])
+            due_rel = float(o.due_date - now)
+            cand_feat[i, j] = [
+                1.0,
+                float(np.clip(due_rel / route_norm, -1.0, 3.0)),
+                _compressed(est["leg1_time"], op_norm),
+                _compressed(est["total_time"], route_norm),
+                sim._pickup_congestion(o),
+                (float(o.priority) - 1.0) / 2.0,
+                1.0 if o.priority == 1 else 0.0,
+                float(getattr(o, "type_id", 0)) / 4.0,
+                float(np.clip(1.0 - slack / slack_norm, 0.0, 1.0)),
+                float(np.clip(slack / slack_norm, -3.0, 3.0)),
+                float(np.clip(due_rel / route_norm, -1.0, 3.0)),
+                rank_of.get(id(o), 0.0),
+            ]
+            cand_mask[i, j] = 1.0 if can_take else 0.0
+            cand_order_ids[i, j] = int(o.order_id)
+            cand_actions[i, j] = j + 1  # 动作号 = 候选 index + 1（delivery_env 约定）
+            edge_feat[i, j] = EdgeScorer.build_features(sim, r, o, pos, start, now)
+
+    total = max(1, len(sim.orders))
+    busy = sum(1 for r in sim.riders.values() if len(r.carry) >= r.capacity)
+    global_feat = np.asarray([
+        min(1.0, now / max(1.0, sim._simulation_time)),
+        len(sim.pool) / total,
+        busy / max(1, n),
+        _compressed(len(sim.pool), 20.0),
+        n / 12.0,
+    ], dtype=np.float32)
+
+    return {
+        "rider_feat": rider_feat,
+        "rider_mask": rider_mask,
+        "cand_feat": cand_feat,
+        "cand_mask": cand_mask,
+        "edge_feat": edge_feat,
+        "cand_order_ids": cand_order_ids,
+        "cand_actions": cand_actions,
+        "global_feat": global_feat,
+        "rider_names": names,
+    }

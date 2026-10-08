@@ -6,7 +6,6 @@
 
 # Directories
 !environments/
-!mappo/
 
 # Delivery scenario
 !environments/delivery_env.py
@@ -24,12 +23,37 @@
 !checks/make_realistic_sample.py
 !checks/real_pool_train_check.py
 !checks/set_encoding_check.py
+!checks/hybrid_dispatch_check.py
+!checks/check_hybrid_training.py
 
-# Scheme B
-!mappo/set_encoder.py
-!mappo/ppo_network_set.py
+# Scheme B（集合编码算子，hybrid 主干复用）
 !environments/set_obs.py
 !docs/plan_scheme_b_set_encoding.md
+
+# Hybrid 派单主干（边效用网络 + off-policy TD + 约束匹配 + 滚动重优化）
+!hybrid/
+!hybrid/__init__.py
+!hybrid/set_encoder.py
+!hybrid/edge_value_net.py
+!hybrid/scorers.py
+!hybrid/replay_buffer.py
+!hybrid/collect.py
+!hybrid/evaluate.py
+!hybrid/trainer.py
+!hybrid_train.py
+
+# 历史归档（MAPPO/CTDE 栈，冻结只读）
+!archive/
+!archive/auto_train.py
+!archive/mappo/
+!archive/mappo/ppo_buffer.py
+!archive/mappo/ppo_network.py
+!archive/mappo/ppo_network_set.py
+!archive/mappo/ppo_worker.py
+!archive/mappo/ppo_trainer.py
+!archive/mappo/ppo_marl_train.py
+!archive/mappo/sampling_utils.py
+!archive/mappo/set_encoder.py
 
 # Schema field maps from DingTalk (no PII samples)
 !data/
@@ -46,17 +70,8 @@
 !骑手派单仿真样本_果洛藏族自治州_20260915_全量.xlsx
 
 # Python scripts
-!auto_train.py
 !evaluation_delivery.py
 !log_parser.py
-
-# MARL 模块
-!mappo/ppo_buffer.py
-!mappo/ppo_network.py
-!mappo/ppo_worker.py
-!mappo/ppo_trainer.py
-!mappo/ppo_marl_train.py
-!mappo/sampling_utils.py
 
 # Documentation
 !README.md
@@ -64,6 +79,8 @@
 !docs/design_variable_riders_orders.md
 !AGENTS.md
 !project.md
+!docs/hybrid_implementation.md
+!docs/research_dispatch_algorithm_survey.md
 
 # Dependencies
 !requirements.txt

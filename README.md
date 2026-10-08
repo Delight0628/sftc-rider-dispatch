@@ -3,16 +3,16 @@
 ```
 ╔═══════════════════════════════════════════════════════════════╗
 ║                                                               ║
-║   🛵  骑手派单调度 · 多智能体强化学习系统  🤖                 ║
+║   🛵  骑手派单调度 · Hybrid 学习打分 + 约束匹配  🤖           ║
 ║                                                               ║
-║     双塔召回 → Wide&Deep 精排 → MAPPO 全局调度               ║
+║     双塔召回 → Wide&Deep 精排 → Hybrid 全局调度              ║
 ║                                                               ║
 ╚═══════════════════════════════════════════════════════════════╝
 ```
 
-# Rider Dispatch MAPPO
+# Rider Dispatch Hybrid
 
-**基于多智能体强化学习（MAPPO）的即时配送骑手派单调度系统**
+**基于「学习边效用 + 约束二分图匹配 + 滚动重优化」的即时配送骑手派单调度系统**
 
 [![Python 3.8+](https://img.shields.io/badge/Python-3.8+-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/downloads/)
 [![TensorFlow 2.15](https://img.shields.io/badge/TensorFlow-2.15-FF6F00?style=for-the-badge&logo=tensorflow&logoColor=white)](https://www.tensorflow.org/)
@@ -29,7 +29,7 @@
 
 ## 项目概述
 
-本项目是三层级联调度架构中的 **MAPPO 调度层**，负责在时间约束下进行全局骑手派单决策。
+本项目是三层级联调度架构中的 **Hybrid 调度层**，负责在时间约束下进行全局骑手派单决策。
 
 ### 三层架构
 
@@ -37,15 +37,22 @@
 |------|------|------|
 | 召回 | 双塔模型 | 骑手-订单粗排，输出候选集 |
 | 精排 | Wide & Deep | 接单意愿精排，输出 Top-K 候选 |
-| **调度** | **MAPPO（本仓库）** | **时间紧迫性优先的全局派单** |
+| **调度** | **Hybrid（本仓库）** | **时间紧迫性优先的全局派单** |
 
-### 核心设计
+### Hybrid 核心设计
 
-- **场景映射**：骑手=智能体，订单=工件，配送路线=动态两段工艺（取餐→送餐）
-- **观测空间**：146 维层次化状态（骑手状态 + 全局宏观 + 队列摘要 + 候选特征 + 未来订单）
-- **动作空间**：MultiDiscrete，每个骑手从候选池选单或 IDLE
-- **奖励体系**：送达奖励 + 准时奖励 + 超时 Huber 惩罚 + 终局分数 bonus
-- **上游接入**：支持上游（双塔+W&D）精排候选注入，意愿分编码在观测特征中
+- **范式**：学习边效用 `q(骑手, 订单)` + 约束二分图匹配 + 滚动重优化
+  - 与 MAPPO/CTDE 对比：集中决策替代分散策略，匹配层保证 feasibility，边级信用替代全局 reward 均摊
+  - 理论依据：`docs/research_dispatch_algorithm_survey.md` §5；工业验证：DiDi KDD 2018/2019/2022、Meituan SCDN
+- **编码**：集合编码（DeepSets + Cross-Attention），N/K 可变，零 one-hot 宽度约束
+- **学习**：off-policy n-step TD（fitted-Q 式），γ=0.99，n=5，目标网络软更新
+- **匹配**：贪心 + 交换改进的加权二分图匹配，带容量 b-matching（同骑手多单 FIFO）
+- **状态**：rider_set `[N,8]` + cand_set `[N,K,12]` + global `[5]` + edge_feat `[N,K,12]`
+- **动作**：匹配结果映射为候选下标动作（经 `env.step` 落地）
+- **探索**：温度 τ=0.5 softmax 边采样 + 贪心匹配
+- **上游接入**：支持上游（双塔+W&D）精排候选注入；意愿分不进策略，仅作候选元信息
+
+> **历史**：原 MAPPO/CTDE 栈已归档至 `archive/mappo/`（冻结对照）；2026-10-08 起 Hybrid 为唯一训练框架。
 
 ## 快速开始
 
@@ -53,14 +60,18 @@
 # 安装依赖
 pip install -r requirements.txt
 
-# 配送场景训练（mock 上游候选）
-python mappo/ppo_marl_train.py --scenario delivery --candidate-source upstream
+# Hybrid 训练（mock 联调）
+python hybrid_train.py --scenario delivery --episodes 50
 
-# 对比基线（环境自采样候选）
-python mappo/ppo_marl_train.py --scenario delivery --candidate-source endogenous
+# Hybrid 训练（真实果洛样本）
+python hybrid_train.py \
+  --real-orders "骑手派单仿真样本_果洛藏族自治州_20260915_全量.xlsx" \
+  --real-riders "骑手派单仿真样本_果洛藏族自治州_20260915_全量.xlsx" \
+  --episode-order-size 40 \
+  --episodes 200
 
-# 自动化训练
-python auto_train.py "<实验名>" --scenario delivery --candidate-source upstream
+# 对拍评估
+python evaluation_delivery.py --baseline all --episodes 5
 ```
 
 ## 项目结构
@@ -68,21 +79,31 @@ python auto_train.py "<实验名>" --scenario delivery --candidate-source upstre
 ```
 rider-dispatch-mappo/
 ├── environments/
-│   ├── delivery_config.py      # 配送配置：骑手/地理/订单生成/奖励/上游接口
+│   ├── delivery_config.py      # 配送配置：骑手/地理/订单/奖励/评分/HYBRID_*_CONFIG
 │   ├── delivery_env.py         # 配送仿真环境：DeliverySim + DeliveryEnv
+│   ├── hybrid_dispatch.py      # 边打分 + 约束匹配 + 滚动重优化（推理主干，零 TF）
+│   ├── set_obs.py              # 集合观测导出（含 build_all_pairs_set_obs）
 │   ├── real_data_schema.py     # 真实数仓字段映射 + 调度 KPI 筛选
 │   ├── real_data_loader.py     # 订单/骑士样本 → custom_orders
 │   ├── w_factory_env.py        # 环境工厂（场景分发入口）
 │   └── w_factory_config.py     # 共享基础配置
-├── mappo/
-│   ├── ppo_marl_train.py       # 训练入口（支持 --scenario delivery）
-│   ├── ppo_trainer.py          # MAPPO 训练器
-│   ├── ppo_network.py          # Actor-Critic 网络
-│   ├── ppo_worker.py           # 并行采样 Worker
-│   ├── ppo_buffer.py           # 经验缓冲
-│   └── sampling_utils.py       # 候选采样工具
-├── auto_train.py               # 自动化训练流水线
-├── update.md                   # 改造日志与进度记录
+├── hybrid/
+│   ├── set_encoder.py          # 集合编码算子（TF + numpy 双实现）
+│   ├── edge_value_net.py       # 边效用网络（TF/Keras + npz 导出降级）
+│   ├── scorers.py              # Linear / Neural EdgeScorer（统一接口）
+│   ├── replay_buffer.py        # off-policy 经验回放（边级信用回填）
+│   ├── collect.py              # episode 采集（温度采样行为策略，可并行）
+│   ├── trainer.py              # n-step TD 训练循环 + early-stop 回滚
+│   └── evaluate.py             # 对拍评估（neural/linear/启发式同口径）
+├── hybrid_train.py             # 训练入口 CLI
+├── archive/mappo/              # MAPPO/CTDE 历史栈（冻结，仅作对照）
+├── evaluation_delivery.py      # 基线对拍（--baseline hybrid --hybrid-scorer …）
+├── docs/
+│   ├── research_dispatch_algorithm_survey.md   # 算法调研与路线对比
+│   ├── hybrid_implementation.md                # 本框架实现文档
+│   └── plan_scheme_b_set_encoding.md           # 方案 B 集合编码设计
+├── supervisor/                 # 监督器、备份、启动脚本
+├── runs/                       # 训练产物（模型 + 日志 + metrics.jsonl）
 └── requirements.txt
 ```
 
@@ -99,7 +120,7 @@ config['upstream_candidates'] = {
 }
 ```
 
-- 意愿分编码在候选特征 `[1]` 位，146 维观测布局不变
+- 意愿分不进观测/策略：仅存在于 `candidates_map[i]['willingness']`；候选特征 `[1]` 位为 `due_rel`（紧迫维度）
 - 排序口径：`urgency`（时间紧迫性优先，默认）/ `upstream`（保持上游意愿序）
 - 容错：未覆盖骑手回退自采样；候选不足用最紧迫订单补齐
 
@@ -107,20 +128,21 @@ config['upstream_candidates'] = {
 
 ```bash
 # 纯环境层回归（无需 TensorFlow）
-set PYTHONPATH=%CD%
 python checks/delivery_logic_check.py
 python checks/delivery_upstream_check.py
 python checks/dispatch_integration_check.py
 
-# 启发式基线对比（idle/fifo/nearest/edd/random）
+# Hybrid 基础校验（含 scorer parity / 对拍 / TF 降级）
+python checks/hybrid_dispatch_check.py
+python checks/check_hybrid_training.py
+
+# 启发式基线对比（idle/fifo/nearest/edd/random/hybrid）
 python evaluation_delivery.py --baseline all --episodes 5
-python evaluation_delivery.py --baseline all --episodes 5 --candidate-source upstream
 
 # 真实样本（业务方导出或本地同构样本）
-python checks/make_realistic_sample.py --out data/samples
-python evaluation_delivery.py --baseline edd --episodes 3 \
-  --real-orders data/samples/sample_orders.csv --real-riders data/samples/sample_riders.csv
-python checks/real_data_schema_check.py
+python evaluation_delivery.py --baseline all --episodes 5 \
+  --real-orders data/real_incoming/orders_guoluo_20260915_ready.csv \
+  --real-riders data/real_incoming/riders_guoluo_20260915_full.csv
 ```
 
 ## License

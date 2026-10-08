@@ -53,8 +53,58 @@
 
 ---
 
-## 5. 变更
+## 5. 系统性解决方案（2026-10-08 讨论稿，待敲定）
+
+> 覆盖五个议题：双重不确定性分析 / 变长算法框架 / 动态匹配策略 / 多目标 / 评估验证。
+
+### 5.1 双重不确定性的表现与影响
+
+| 不确定性 | 表现形式 | 本项目映射 | 算法影响 |
+|---|---|---|---|
+| 资源侧 N | 骑手上下线、离线扰动、站点进出 | `riders` 注入（`real_data_loader.build_rider_configs:302`）；离线在观测中表达（不剔除 agent）；146 路径锁 N=5 | 观测定维失效；身份 one-hot 绑定 N；Critic 全局态 `5×3` 写死 |
+| 任务侧 M | 订单随机到达、due 异质、ready 分布 | `future/pool` 分桶 + 事件推进（`delivery_env.py:825`）；窗口采样（`sample_order_window:414`） | 已用候选 Top-K + 池摘要解耦 M 与动作维 |
+| 匹配关系 | 无固定工艺序，同池抢单竞争 | 竞态互斥（`step_with_actions:713`）；候选 `_get_candidate_orders:501` | 多智能体非平稳性、信用分配、lazy agent |
+
+### 5.2 变长调度算法框架（方案 B 路线，CTDE 不变）
+
+- **Actor**：每骑手分布式决策，输入 set 观测（`set_obs.build_set_obs:33`），DeepSets + CrossAttention（`ppo_network_set.actor_forward`）保证**置换等变性** → N 可变、可 zero-shot 新站点人数
+- **Critic**：集中式 V，骑手 set + 池 set mask 聚合（`build_global_set_state:131`），维数不随 N 崩
+- **动作**：不变，每骑手 `Discrete(K+1)` + mask（`_get_action_mask:581`）
+- **训练**：多尺度 N 采样（3–8，P2）= 域随机化；沿用两阶段课程；PPO clip+GAE 不变
+- **推进**：P0 已过 25/25 → P1 trainer 接 `--obs-mode set` → P2 多尺度 N → P3 与 146 A/B
+
+### 5.3 资源-任务动态匹配关键策略
+
+1. **滚动重排**而非一次性匹配：每决策 epoch 重建候选（事件驱动，无固定时隙）
+2. **候选 Top-K + mask**：动作维与 M 解耦；掩码采样/更新一致（注意 CODE_AUDIT P0-②）
+3. **时序语义保真**：候选保留 `due_rel / slack / arrive_rank_norm`（已入 set 特征，草稿 §2 待强化项已闭合）
+4. **竞争处理**：同池竞态互斥，先到先得；不建模路径互扰（共识）
+5. **离线鲁棒**：骑手离线以 mask 表达，策略需学"换人重排"，由泛化阶段动态事件训练
+
+### 5.4 多目标处理
+
+- 目标解耦两层：**评分口径**（完成40/准时35/makespan15/利用率10）衡量效果；**奖励塑形**（送达+准时−Huber−闲置+终局 bonus）提供学习信号——两者允许不同，防 reward hacking
+- 公平性 = 负载均衡（利用率分布），以团队奖励 + idle 惩罚近似；避免 lazy agent（参数共享下靠 per-agent GAE 优势）
+- 实时性 = 事件驱动决策延迟预算；每步只有 Actor 前向，无在线优化
+- 明确风险：「少送单换零延期」型 hacking 由完成率 40% 权重 + 单均迟到口径约束（勿回退旧口径）
+
+### 5.5 评估指标与验证方法
+
+| 层 | 内容 |
+|---|---|
+| 主指标 | 完成率、准时率、单均迟到（`KPI_SPEC` primary） |
+| 诊断 | 超时 >5/15/30 分桶、util 分布、idle 率 |
+| 泛化验证 | N∈{3,5,8} zero-shot、骑手离线/紧急单扰动、果洛 holdout 窗口 |
+| 基线对照 | nearest/edd/fifo/idle/random（`evaluation_delivery.py`）；**RL 必须赢 nearest（当前果洛最强基线 0.491）才算有效** |
+| 回归 | `checks/` 全绿（31/41/14/25 + real_data checks） |
+
+**前置约束**：CODE_AUDIT 三个 P0（归一化跨分布 / mask update 缺失 / 回报归一化与 GAE 冲突）修复前，调参与 set 接线（P1）的训练结论均不可信。
+
+---
+
+## 6. 变更
 
 | 日期 | 说明 |
 |------|------|
 | 2026-09-29 | 从 AGENTS.md §10 撤出为独立草稿；去掉路径互扰；补订单截止/排队 |
+| 2026-10-08 | 新增 §5 系统性方案讨论稿（双重不确定性/框架/匹配/多目标/评估） |

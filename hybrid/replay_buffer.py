@@ -1,0 +1,102 @@
+"""hybrid/replay_buffer.py — off-policy 经验回放（边级信用回填）
+
+文档约定：docs/hybrid_implementation.md §4.1
+
+Transition（每个决策 epoch 一条）：
+  obs       : obs_pack_t（build_all_pairs_set_obs 输出 dict）
+  edges     : List[(i, j, order_id)]      该 epoch 被匹配的边
+  utility   : List[float]                 episode 末回填的实现效用（与 edges 对齐）
+  obs_boot  : n_step 后的 obs_pack（截断到 episode 末）
+  boot      : γ^n（可 bootstrap）或 0.0（episode 已终止）
+"""
+
+from __future__ import annotations
+
+import random
+from typing import Any, Dict, List
+
+import numpy as np
+
+
+def pad_collate(obs_list: List[Dict[str, Any]]) -> Dict[str, np.ndarray]:
+    """把变长 N 的 obs_pack 列表 pad 成 batch 张量（K 固定）。"""
+    b = len(obs_list)
+    n_max = max(o["rider_feat"].shape[0] for o in obs_list)
+    k = obs_list[0]["cand_feat"].shape[1]
+
+    rider_feat = np.zeros((b, n_max, obs_list[0]["rider_feat"].shape[1]), np.float32)
+    rider_mask = np.zeros((b, n_max), np.float32)
+    cand_feat = np.zeros((b, n_max, k, obs_list[0]["cand_feat"].shape[2]), np.float32)
+    cand_mask = np.zeros((b, n_max, k), np.float32)
+    edge_feat = np.zeros((b, n_max, k, obs_list[0]["edge_feat"].shape[2]), np.float32)
+    global_feat = np.zeros((b, obs_list[0]["global_feat"].shape[0]), np.float32)
+
+    for bi, o in enumerate(obs_list):
+        n = o["rider_feat"].shape[0]
+        rider_feat[bi, :n] = o["rider_feat"]
+        rider_mask[bi, :n] = o["rider_mask"]
+        cand_feat[bi, :n] = o["cand_feat"]
+        cand_mask[bi, :n] = o["cand_mask"]
+        edge_feat[bi, :n] = o["edge_feat"]
+        global_feat[bi] = o["global_feat"]
+
+    return {
+        "rider_feat": rider_feat,
+        "rider_mask": rider_mask,
+        "cand_feat": cand_feat,
+        "cand_mask": cand_mask,
+        "edge_feat": edge_feat,
+        "global_feat": global_feat,
+    }
+
+
+class ReplayBuffer:
+    """定容 FIFO 回放；sample 返回 pad 后的 obs/batch 边索引/目标分量。"""
+
+    def __init__(self, capacity: int = 10000, seed: int = 0):
+        self.capacity = int(capacity)
+        self._data: List[Dict[str, Any]] = []
+        self._rng = random.Random(seed)
+
+    def __len__(self) -> int:
+        return len(self._data)
+
+    def add_episode(self, transitions: List[Dict[str, Any]]) -> None:
+        for t in transitions:
+            self._data.append(t)
+        if len(self._data) > self.capacity:
+            self._data = self._data[-self.capacity:]
+
+    def sample(self, batch_size: int) -> Dict[str, Any]:
+        """采样 batch，展开为逐边训练样本。
+
+        返回：
+          obs       : pad_collate(obs_t)
+          obs_boot  : pad_collate(obs_boot)
+          edge_batch/edge_i/edge_j : [E] 每条训练边的 (batch_idx, rider_i, slot_j)
+          utility   : [E] 回填的实现效用
+          boot      : [E] γ^n 或 0
+        """
+        idx = self._rng.sample(range(len(self._data)),
+                               k=min(batch_size, len(self._data)))
+        obs_list, boot_list = [], []
+        e_b, e_i, e_j, e_u, e_boot = [], [], [], [], []
+        for bi, di in enumerate(idx):
+            tr = self._data[di]
+            obs_list.append(tr["obs"])
+            boot_list.append(tr["obs_boot"])
+            for (i, j, _oid), u in zip(tr["edges"], tr["utility"]):
+                e_b.append(bi)
+                e_i.append(i)
+                e_j.append(j)
+                e_u.append(u)
+                e_boot.append(tr["boot"])
+        return {
+            "obs": pad_collate(obs_list),
+            "obs_boot": pad_collate(boot_list),
+            "edge_batch": np.asarray(e_b, np.int32),
+            "edge_i": np.asarray(e_i, np.int32),
+            "edge_j": np.asarray(e_j, np.int32),
+            "utility": np.asarray(e_u, np.float32),
+            "boot": np.asarray(e_boot, np.float32),
+        }

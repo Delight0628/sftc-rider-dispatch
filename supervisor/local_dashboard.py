@@ -145,7 +145,7 @@ def poll_once(cfg: Dict[str, Any]) -> None:
         "awk '{printf \"%.0f\\n\", $1/1024/1024}' /sys/fs/cgroup/memory/memory.limit_in_bytes 2>/dev/null; "
         "awk '{printf \"%.0f\\n\", $1/1024/1024}' /sys/fs/cgroup/memory/memory.usage_in_bytes 2>/dev/null; "
         "echo __PROC__; "
-        "ps aux | grep -E 'ppo_marl_train|spawn_main' | grep -v grep | wc -l; "
+        "ps aux | grep -E 'hybrid_train|spawn_main' | grep -v grep | wc -l; "
         "echo __LOG__; "
         f"wc -l < {remote_log}; "
         f"tail -3 {remote_log}; "

@@ -134,16 +134,22 @@ def check_upstream_willingness_per_order(ck: Checker):
     ck.check("候选非空", len(cands) > 0, f"n={len(cands)}, pool={len(env.sim.pool)}")
     ck.check("上游覆盖单意愿一致", checked > 0 and not mismatch,
              f"checked={checked}, mismatch={mismatch[:3]}, upstream={list(upstream_map)[:5]}")
-    # 观测槽位
+    # 观测槽位：候选 10 维 [1] 槽现为 due_rel（2026-09-30 起意愿不进策略，
+    # 意愿分仅存在于 candidates_map[i]['willingness']，见 delivery_env.py 注释）
     state = env.sim.get_state_for_agent(agent)
     cand_start = 42
+    now = env.sim.current_time
+    slack_norm = float(env.sim._obs_cfg.get("slack_time_norm", 120.0))
     slots_ok = True
+    slot_detail = "ok"
     for c in cands:
         slot = float(state[cand_start + c["queue_index"] * 10 + 1])
-        if abs(slot - c["willingness"]) > 1e-5:
+        expected = float(np.clip((float(c["due_date"]) - now) / slack_norm, -1.0, 3.0))
+        if abs(slot - expected) > 1e-5:
             slots_ok = False
+            slot_detail = f"oid={c['part_id']} slot={slot:.4f} expected={expected:.4f}"
             break
-    ck.check("观测槽位与 candidates_map 一致", slots_ok, "slot mismatch")
+    ck.check("观测槽位[1]=due_rel 与 candidates_map 一致", slots_ok, slot_detail)
 
 
 def check_factory_default_no_delivery_keys(ck: Checker):

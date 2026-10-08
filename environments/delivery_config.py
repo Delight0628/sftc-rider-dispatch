@@ -554,3 +554,57 @@ def calculate_delivery_episode_score(kpi_results: Dict[str, float], config: Dict
         makespan_score * 0.15 +
         utilization_score * 0.10
     )
+
+
+# =============================================================================
+# 12. 混合派单框架（学习边效用 + 约束二分图匹配 + 滚动重优化）
+#     对应 docs/research_dispatch_algorithm_survey.md §5 推荐架构
+# =============================================================================
+HYBRID_DISPATCH_CONFIG = {
+    # 边特征 12 维权重（EdgeScorer.EDGE_FEATURE_NAMES 对齐）：
+    # bias, order_urgency, on_time_feasible, late_norm(-), to_pickup_norm(-),
+    # route_norm(-), rider_load(-), free_delay_norm(-), priority_norm,
+    # is_urgent, congestion(-), slack_norm
+    "edge_weights": [
+        0.0,    # bias
+        1.5,    # order_urgency   ：紧迫单优先（EDD 分量）
+        2.0,    # on_time_feasible：预计可达准时，强正权
+        -2.0,   # late_norm       ：预计迟到重罚
+        -0.8,   # to_pickup_norm  ：nearest 分量
+        -0.5,   # route_norm      ：全程耗时代价
+        -0.6,   # rider_load      ：负载均衡
+        -0.7,   # free_delay_norm ：快空闲骑手优先
+        0.6,    # priority_norm
+        0.8,    # is_urgent
+        -0.3,   # congestion
+        0.4,    # slack_norm      ：同等条件偏好安全余量
+    ],
+    "slack_norm": 120.0,          # 紧迫/余量归一基准（分钟），与 obs slack_time_norm 一致
+    "w_tard": 2.0,                # 学习目标中迟到项权重（realized_utility）
+    "w_dist": 0.5,                # 学习目标中里程项权重
+    "learn": False,               # 默认关闭在线更新（评估确定性）；实验打开
+    "learn_lr": 0.01,
+    "max_assign_per_step": 8,     # 单决策步单骑手最大连派单数（容量 b-matching 轮数上限）
+}
+
+
+# Hybrid 训练配置（docs/hybrid_implementation.md §5；与代码严格一致）
+HYBRID_TRAINING_CONFIG = {
+    "lr": 1e-3,
+    "gamma": 0.99,
+    "n_step": 5,                  # n-step TD 步数（缓解履约延迟奖励）
+    "temp_start": 0.5,            # 行为策略 softmax 温度（探索）
+    "temp_end": 0.1,
+    "temp_anneal_episodes": 200,  # 温度线性退火区间
+    "buffer_size": 10000,
+    "batch_size": 64,
+    "target_soft_tau": 0.005,     # 目标网络软更新
+    "hidden_dim": 64,
+    "num_heads": 4,
+    "episodes_per_iter": 4,       # 每次迭代的采集 episode 数
+    "updates_per_iter": 8,        # 每次迭代的 mini-batch 更新数
+    "eval_every": 10,             # 每隔多少迭代做一次对拍评估
+    "eval_episodes": 3,
+    "rollback_patience": 2,       # neural 连续不赢 linear 的轮数 → 回滚
+    "max_grad_norm": 5.0,
+}
