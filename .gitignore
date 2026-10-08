@@ -9,6 +9,7 @@
 
 # Delivery scenario
 !environments/delivery_env.py
+!environments/hybrid_dispatch.py
 !environments/delivery_config.py
 !environments/real_data_schema.py
 !environments/real_data_loader.py
