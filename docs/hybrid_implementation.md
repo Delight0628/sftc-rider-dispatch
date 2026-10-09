@@ -101,31 +101,34 @@ y_e = Σ_{k=0}^{n-1} γ^k · r̃_{t+k}  +  γ^n · max_{e'∈候选(i,·)} q_tar
 
 ### 4.4 训练循环
 ```
+init ckpt: warm-start / 续训起点权重显式留存（edge_net_init.* + 内存副本，回滚兜底目标）
 for iter:
   并行采集 collect_episodes(n_episodes_per_iter, 行为策略)   # ProcessPoolExecutor，失败降级串行
   buffer.add(...)
   for _ in range(updates_per_iter):
-      batch = buffer.sample(batch_size)
+      batch = buffer.sample(batch_size, recent_frac, recent_window)   # recent 优先混合采样
       td_update(batch)
       target_soft_update()
   if iter % eval_every == 0:
-      metrics = evaluate_all(neural, linear, heuristics)       # hybrid/evaluate.py
-      if neural < linear 连续 2 轮: 回滚 best_ckpt; lr *= 0.5
+      metrics = evaluate_all(neural, linear, heuristics)       # hybrid/evaluate.py，固定 seed 集
+      if neural < linear 连续 2 轮:
+          回滚 best_ckpt（best 未触发时回滚 init ckpt）; lr = max(lr_min, lr*0.5)
       if 达标(可配置 target_score): 保存 best 并可 early-stop
 ```
-产物：`<models_dir>/edge_net_best.h5` + `edge_net_best.npz`（降级推理用）、`metrics.jsonl`、TensorBoard。
+产物：`<models_dir>/checkpoints/edge_net_{init,best,last}.npz` + `.weights.h5`、`edge_net_eval.npz`、`metrics.jsonl`、TensorBoard。
 
 ## 5. 配置（delivery_config.py）
 
 ```python
 HYBRID_TRAINING_CONFIG = {
-    "lr": 1e-3, "gamma": 0.99, "n_step": 5,
+    "lr": 1e-3, "lr_min": 1e-5, "gamma": 0.99, "n_step": 8,
     "temp_start": 0.5, "temp_end": 0.1, "temp_anneal_episodes": 200,
     "buffer_size": 10000, "batch_size": 64,
+    "recent_frac": 0.5, "recent_window": 2000,
     "target_soft_tau": 0.005,
     "hidden_dim": 64, "num_heads": 4,
     "episodes_per_iter": 4, "updates_per_iter": 8, "eval_every": 10,
-    "eval_episodes": 3, "rollback_patience": 2,
+    "eval_episodes": 3, "eval_seed_base": 90000, "rollback_patience": 2,
     "max_grad_norm": 5.0,
 }
 ```
@@ -158,4 +161,4 @@ python hybrid_train.py [--episodes 200] [--seed 0]
 | TF 不可用 | NeuralEdgeScorer 导入失败 → LinearEdgeScorer + warning；npz numpy 推理 |
 | 并行采集失败 | 捕获 BrokenProcessPool → 单进程串行 |
 | TD 发散 | loss NaN → 回滚 best + lr 减半 + 冻结 target 10 轮 |
-| neural 不赢 linear | 连续 2 轮不赢 → 回滚最近赢的 checkpoint |
+| neural 不赢 linear | 连续 2 轮不赢 → 回滚 best（未触发时回滚 init）+ lr 减半至下限 `lr_min` |

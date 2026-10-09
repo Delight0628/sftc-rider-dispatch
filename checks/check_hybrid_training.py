@@ -195,6 +195,31 @@ def main():
                                        tr.online_net.trainable_variables))
             ck.check("目标网络软更新幅度合理（<0.1）", diff < 0.1, f"max|Δ|={diff:.2e}")
 
+            # --- 保护机制回归（2026-10-09 修正版）---
+            # recent 优先采样：recent_frac=1 时样本全部来自最近 recent_window 条
+            tag_buf = ReplayBuffer(capacity=200, seed=0)
+            trs3, _ = collect_episode(MOCK_CFG, scorer_kind="linear", temp=0.3, seed=3)
+            for gi, t in enumerate(trs3):
+                t = dict(t)
+                t["utility"] = [float(gi)] * len(t["edges"])
+                tag_buf.add_episode([t])
+            n_total = len(tag_buf)
+            bb = tag_buf.sample(8, recent_frac=1.0, recent_window=5)
+            u_max = float(bb["utility"].max())
+            ck.check("recent 优先采样仅取最近窗口",
+                     u_max >= float(n_total - 5), f"max utility idx={u_max}/{n_total}")
+            # init 回滚：扰动权重后 _rollback_to_init 恢复 warm-start 副本
+            for w in tr.online_net.trainable_variables:
+                w.assign(w.numpy() + 1.0)
+            tr._rollback_to_init()
+            w1 = tr.online_net.get_weights()
+            ck.check("init 回滚恢复 warm-start 权重",
+                     all(np.allclose(a, b) for a, b in zip(w1, tr._init_weights)))
+            # lr 下限配置合法（0 < lr_min <= lr）
+            ck.check("lr_min 下限配置合法",
+                     0.0 < HYBRID_TRAINING_CONFIG["lr_min"] <= HYBRID_TRAINING_CONFIG["lr"],
+                     f"lr_min={HYBRID_TRAINING_CONFIG['lr_min']}")
+
     return ck.summary()
 
 

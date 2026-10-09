@@ -591,13 +591,16 @@ HYBRID_DISPATCH_CONFIG = {
 # Hybrid 训练配置（docs/hybrid_implementation.md §5；与代码严格一致）
 HYBRID_TRAINING_CONFIG = {
     "lr": 1e-3,
+    "lr_min": 1e-5,               # 保护机制 lr 下限（减半不得低于此值，防学习冻结）
     "gamma": 0.99,
-    "n_step": 5,                  # n-step TD 步数（缓解履约延迟奖励）
+    "n_step": 8,                  # n-step TD 步数（缓解履约延迟奖励）
     "temp_start": 0.5,            # 行为策略 softmax 温度（探索）
     "temp_end": 0.1,
     "temp_anneal_episodes": 200,  # 温度线性退火区间
     "buffer_size": 10000,
     "batch_size": 64,
+    "recent_frac": 0.5,           # recent 优先采样比例（抑 off-policy staleness）
+    "recent_window": 2000,        # recent 采样窗口（最近 N 条）
     "target_soft_tau": 0.005,     # 目标网络软更新
     "hidden_dim": 64,
     "num_heads": 4,
@@ -605,6 +608,7 @@ HYBRID_TRAINING_CONFIG = {
     "updates_per_iter": 8,        # 每次迭代的 mini-batch 更新数
     "eval_every": 10,             # 每隔多少迭代做一次对拍评估
     "eval_episodes": 3,
+    "eval_seed_base": 90000,      # 固定 eval seed 集基址（跨 iter 同场景对拍，消方差）
     "rollback_patience": 2,       # neural 连续不赢 linear 的轮数 → 回滚
     "max_grad_norm": 5.0,
 }

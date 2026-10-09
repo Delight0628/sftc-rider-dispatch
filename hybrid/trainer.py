@@ -92,6 +92,12 @@ class HybridTrainer:
 
         self.optimizer = tf.keras.optimizers.Adam(learning_rate=self.cfg["lr"])
 
+        # init ckpt：warm-start / 续训起点权重显式留存，作为回滚兜底目标
+        # （否则 best 从未触发时回滚是空操作，坏策略一路训到底）
+        self._init_weights = [np.asarray(w).copy()
+                              for w in self.online_net.get_weights()]
+        self._save_ckpt("init")
+
         # 回滚 / best 状态
         self.best_score = -1e9
         self.best_ckpt_base: Optional[str] = None
@@ -180,13 +186,22 @@ class HybridTrainer:
                     print(f"  ⚠️ neural({neural_score:.4f}) < linear({linear_score:.4f}) "
                           f"连续 {self.poor_streak} 轮")
                     if self.poor_streak >= rollback_patience:
+                        # 回滚目标：best 优先，best 从未触发时回滚 init（兜底）
                         if self.best_ckpt_base is not None:
                             print(f"  🔙 回滚到 best ckpt ({self.best_ckpt_base})")
                             self._rollback(self.best_ckpt_base)
-                        # lr 减半
-                        new_lr = float(self.optimizer.learning_rate) * 0.5
-                        self.optimizer.learning_rate.assign(new_lr)
-                        print(f"  📉 lr 减半 → {new_lr:.2e}")
+                        else:
+                            print("  🔙 best 未触发，回滚到 init ckpt（warm-start 权重）")
+                            self._rollback_to_init()
+                        # lr 减半（下限保护：低于 lr_min 不再降，防学习冻结）
+                        lr_min = float(self.cfg.get("lr_min", 1e-5))
+                        cur_lr = float(self.optimizer.learning_rate)
+                        new_lr = max(lr_min, cur_lr * 0.5)
+                        if new_lr < cur_lr:
+                            self.optimizer.learning_rate.assign(new_lr)
+                            print(f"  📉 lr 减半 → {new_lr:.2e}")
+                        else:
+                            print(f"  ⛔ lr 已达下限 {lr_min:.2e}，保持不变")
                         self.poor_streak = 0
 
                 # early-stop
@@ -275,8 +290,11 @@ class HybridTrainer:
 
         total_loss = 0.0
         total_q = 0.0
+        recent_frac = float(self.cfg.get("recent_frac", 0.0))
+        recent_window = int(self.cfg.get("recent_window", 0))
         for _ in range(updates):
-            batch = self.buffer.sample(batch_size)
+            batch = self.buffer.sample(batch_size, recent_frac=recent_frac,
+                                       recent_window=recent_window)
             loss, qm = self._td_update(batch)
             total_loss += loss
             total_q += qm
@@ -337,7 +355,8 @@ class HybridTrainer:
             self.env_config,
             neural_artifact=eval_npz,
             episodes=int(self.cfg["eval_episodes"]),
-            seed=self.seed + 90000 + iter_idx,
+            # 固定 seed 集：每轮 eval 同一订单流，跨 iter 曲线可比（消方差）
+            seed=self.seed + int(self.cfg.get("eval_seed_base", 90000)),
             hidden=self.cfg["hidden_dim"],
             num_heads=self.cfg["num_heads"],
             baselines=("edd", "nearest", "fifo"),
@@ -386,3 +405,8 @@ class HybridTrainer:
             if os.path.exists(h5_path):
                 self.online_net.load_weights(h5_path)
                 self.target_net.load_weights(h5_path)
+
+    def _rollback_to_init(self) -> None:
+        """回滚到 warm-start / 续训起点权重（内存副本 + edge_net_init ckpt）。"""
+        self.online_net.set_weights(self._init_weights)
+        self.target_net.set_weights(self._init_weights)

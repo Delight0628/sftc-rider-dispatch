@@ -67,8 +67,14 @@ class ReplayBuffer:
         if len(self._data) > self.capacity:
             self._data = self._data[-self.capacity:]
 
-    def sample(self, batch_size: int) -> Dict[str, Any]:
+    def sample(self, batch_size: int, recent_frac: float = 0.0,
+               recent_window: int = 0) -> Dict[str, Any]:
         """采样 batch，展开为逐边训练样本。
+
+        recent_frac > 0 时为 recent 优先混合采样：recent_frac 比例从最近
+        recent_window 条中均匀抽（无放回），其余从全 buffer 抽（有放回），
+        抑制 off-policy staleness（旧行为策略样本混入过多 → q 目标噪声）。
+        recent_frac=0 时退化为全 buffer 均匀无放回采样（原行为）。
 
         返回：
           obs       : pad_collate(obs_t)
@@ -77,8 +83,18 @@ class ReplayBuffer:
           utility   : [E] 回填的实现效用
           boot      : [E] γ^n 或 0
         """
-        idx = self._rng.sample(range(len(self._data)),
-                               k=min(batch_size, len(self._data)))
+        n = min(batch_size, len(self._data))
+        if recent_frac > 0 and recent_window > 0 and len(self._data) > 1:
+            n_recent = min(int(round(n * recent_frac)), n)
+            lo = max(0, len(self._data) - int(recent_window))
+            idx = self._rng.sample(range(lo, len(self._data)),
+                                   k=min(n_recent, len(self._data) - lo))
+            if len(idx) < n:
+                idx += self._rng.choices(range(len(self._data)),
+                                         k=n - len(idx))
+            self._rng.shuffle(idx)
+        else:
+            idx = self._rng.sample(range(len(self._data)), k=n)
         obs_list, boot_list = [], []
         e_b, e_i, e_j, e_u, e_boot = [], [], [], [], []
         for bi, di in enumerate(idx):
