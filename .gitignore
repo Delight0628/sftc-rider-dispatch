@@ -82,6 +82,7 @@
 !project.md
 !docs/hybrid_implementation.md
 !docs/research_dispatch_algorithm_survey.md
+!docs/draft_*.md
 
 # Dependencies
 !requirements.txt
