@@ -219,6 +219,13 @@ def main():
             ck.check("lr_min 下限配置合法",
                      0.0 < HYBRID_TRAINING_CONFIG["lr_min"] <= HYBRID_TRAINING_CONFIG["lr"],
                      f"lr_min={HYBRID_TRAINING_CONFIG['lr_min']}")
+            # 回滚保护配置合法（patience>=2，宽限期 >=0 且训练器状态机就绪）
+            ck.check("回滚保护配置合法",
+                     HYBRID_TRAINING_CONFIG["rollback_patience"] >= 2
+                     and HYBRID_TRAINING_CONFIG["rollback_grace_evals"] >= 0
+                     and hasattr(tr, "grace_left"),
+                     f"patience={HYBRID_TRAINING_CONFIG['rollback_patience']} "
+                     f"grace={HYBRID_TRAINING_CONFIG['rollback_grace_evals']}")
 
     return ck.summary()
 

@@ -102,6 +102,7 @@ class HybridTrainer:
         self.best_score = -1e9
         self.best_ckpt_base: Optional[str] = None
         self.poor_streak = 0
+        self.grace_left = 0          # 新 best 后宽限 eval 轮数（期内跳过回滚保护）
         self.iter_count = 0
 
         # 日志
@@ -180,29 +181,38 @@ class HybridTrainer:
                         self.best_score = neural_score
                         self.best_ckpt_base = self._save_ckpt("best")
                         best_iter = iter_idx
-                        print(f"  🏆 新 best neural={neural_score:.4f} @ iter {iter_idx}")
+                        self.grace_left = int(self.cfg.get("rollback_grace_evals", 0))
+                        print(f"  🏆 新 best neural={neural_score:.4f} @ iter {iter_idx}"
+                              f"（宽限 {self.grace_left} 轮）")
                 else:
                     self.poor_streak += 1
                     print(f"  ⚠️ neural({neural_score:.4f}) < linear({linear_score:.4f}) "
                           f"连续 {self.poor_streak} 轮")
                     if self.poor_streak >= rollback_patience:
-                        # 回滚目标：best 优先，best 从未触发时回滚 init（兜底）
-                        if self.best_ckpt_base is not None:
-                            print(f"  🔙 回滚到 best ckpt ({self.best_ckpt_base})")
-                            self._rollback(self.best_ckpt_base)
+                        if self.grace_left > 0:
+                            # 宽限期：新 best 后允许逃离其邻域，不回滚不减半
+                            print(f"  🕊️ 宽限期（剩 {self.grace_left} 轮），跳过回滚保护")
+                            self.poor_streak = 0
                         else:
-                            print("  🔙 best 未触发，回滚到 init ckpt（warm-start 权重）")
-                            self._rollback_to_init()
-                        # lr 减半（下限保护：低于 lr_min 不再降，防学习冻结）
-                        lr_min = float(self.cfg.get("lr_min", 1e-5))
-                        cur_lr = float(self.optimizer.learning_rate)
-                        new_lr = max(lr_min, cur_lr * 0.5)
-                        if new_lr < cur_lr:
-                            self.optimizer.learning_rate.assign(new_lr)
-                            print(f"  📉 lr 减半 → {new_lr:.2e}")
-                        else:
-                            print(f"  ⛔ lr 已达下限 {lr_min:.2e}，保持不变")
-                        self.poor_streak = 0
+                            # 回滚目标：best 优先，best 从未触发时回滚 init（兜底）
+                            if self.best_ckpt_base is not None:
+                                print(f"  🔙 回滚到 best ckpt ({self.best_ckpt_base})")
+                                self._rollback(self.best_ckpt_base)
+                            else:
+                                print("  🔙 best 未触发，回滚到 init ckpt（warm-start 权重）")
+                                self._rollback_to_init()
+                            # lr 减半（下限保护：低于 lr_min 不再降，防学习冻结）
+                            lr_min = float(self.cfg.get("lr_min", 1e-5))
+                            cur_lr = float(self.optimizer.learning_rate)
+                            new_lr = max(lr_min, cur_lr * 0.5)
+                            if new_lr < cur_lr:
+                                self.optimizer.learning_rate.assign(new_lr)
+                                print(f"  📉 lr 减半 → {new_lr:.2e}")
+                            else:
+                                print(f"  ⛔ lr 已达下限 {lr_min:.2e}，保持不变")
+                            self.poor_streak = 0
+                if self.grace_left > 0:
+                    self.grace_left -= 1
 
                 # early-stop
                 if early_stop_iters > 0 and (iter_idx - best_iter) >= early_stop_iters:

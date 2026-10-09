@@ -121,14 +121,15 @@ for iter:
 
 ```python
 HYBRID_TRAINING_CONFIG = {
-    "lr": 1e-3, "lr_min": 1e-5, "gamma": 0.99, "n_step": 8,
+    "lr": 1e-3, "lr_min": 5e-5, "gamma": 0.99, "n_step": 8,
     "temp_start": 0.5, "temp_end": 0.1, "temp_anneal_episodes": 200,
     "buffer_size": 10000, "batch_size": 64,
     "recent_frac": 0.5, "recent_window": 2000,
     "target_soft_tau": 0.005,
     "hidden_dim": 64, "num_heads": 4,
     "episodes_per_iter": 4, "updates_per_iter": 8, "eval_every": 10,
-    "eval_episodes": 3, "eval_seed_base": 90000, "rollback_patience": 2,
+    "eval_episodes": 3, "eval_seed_base": 90000,
+    "rollback_patience": 4, "rollback_grace_evals": 3,
     "max_grad_norm": 5.0,
 }
 ```
@@ -161,4 +162,4 @@ python hybrid_train.py [--episodes 200] [--seed 0]
 | TF 不可用 | NeuralEdgeScorer 导入失败 → LinearEdgeScorer + warning；npz numpy 推理 |
 | 并行采集失败 | 捕获 BrokenProcessPool → 单进程串行 |
 | TD 发散 | loss NaN → 回滚 best + lr 减半 + 冻结 target 10 轮 |
-| neural 不赢 linear | 连续 2 轮不赢 → 回滚 best（未触发时回滚 init）+ lr 减半至下限 `lr_min` |
+| neural 不赢 linear | 连续 `rollback_patience` 轮不赢 → 回滚 best（未触发时回滚 init）+ lr 减半至下限 `lr_min`；新 best 后 `rollback_grace_evals` 轮宽限期内跳过回滚保护（允许逃离 best 邻域） |
