@@ -121,13 +121,13 @@ for iter:
 
 ```python
 HYBRID_TRAINING_CONFIG = {
-    "lr": 5e-4, "lr_min": 1e-5, "gamma": 0.99, "n_step": 8,
+    "lr": 5e-4, "lr_min": 1e-5, "gamma": 0.99, "n_step": 16,
     "temp_start": 0.5, "temp_end": 0.1, "temp_anneal_episodes": 200,
     "buffer_size": 10000, "batch_size": 96,
     "recent_frac": 0.5, "recent_window": 2000,
     "target_soft_tau": 0.005,
-    "hidden_dim": 64, "num_heads": 4,
-    "episodes_per_iter": 4, "updates_per_iter": 4, "eval_every": 10,
+    "hidden_dim": 128, "num_heads": 4,
+    "episodes_per_iter": 4, "updates_per_iter": 2, "eval_every": 10,
     "eval_episodes": 3, "eval_seed_base": 90000,
     "rollback_patience": 2, "rollback_grace_evals": 0,
     "resume_best_score": -1e9,
