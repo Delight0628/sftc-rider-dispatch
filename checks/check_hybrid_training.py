@@ -80,13 +80,24 @@ def main():
     print("\n[2] collect_episode 采集结构")
     from hybrid.collect import collect_episode
     trans, stats = collect_episode(MOCK_CFG, scorer_kind="linear", temp=0.3, seed=0,
-                                   n_step=5, gamma=0.99)
+                                   n_step=5, gamma=0.99, lam=0.8)
     ck.check("transitions 非空", len(trans) > 0, str(len(trans)))
     t0 = trans[0]
-    ck.check("transition 键齐",
-             {"obs", "edges", "utility", "obs_boot", "boot"} <= set(t0.keys()))
+    ck.check("transition 键齐（exp-c λ阶梯）",
+             {"obs", "edges", "utility", "obs_boots", "boot_w", "boot_g"} <= set(t0.keys()))
     ck.check("edges 与 utility 对齐", len(t0["edges"]) == len(t0["utility"]))
-    ck.check("boot=γ^n", abs(t0["boot"] - 0.99 ** 5) < 1e-9, str(t0["boot"]))
+    ck.check("exp-c 阶梯长度一致且 boot_w 和为 1",
+             len(t0["obs_boots"]) == len(t0["boot_w"]) == len(t0["boot_g"])
+             and abs(sum(t0["boot_w"]) - 1.0) < 1e-9,
+             f"L={len(t0['boot_w'])} sum={sum(t0['boot_w']):.6f}")
+    ck.check("exp-c boot_g ∈ [0, γ]",
+             all(0.0 <= g <= 0.99 + 1e-9 for g in t0["boot_g"]))
+    # λ 质量分配公式：w_k = λ^{n_{k-1}} − λ^{n_k}（尾阶 λ^{n_{L-2}}...见 collect）
+    _lam, _lad = 0.8, [1, 2, 4, 5]
+    _ws = [_lam ** 0 - _lam ** 1, _lam ** 1 - _lam ** 2, _lam ** 2 - _lam ** 4, _lam ** 4]
+    ck.check("exp-c λ 质量分配公式一致",
+             all(abs(a - b) < 1e-9 for a, b in zip(t0["boot_w"], _ws)),
+             f"{t0['boot_w']} vs {_ws}")
     # utility 口径：履约边 ∈ [-1, 1]，未履约 = -1
     all_u = [u for tr in trans for u in tr["utility"]]
     ck.check("utility ∈ [-1, 1+ε]", all(-1.0 - 1e-6 <= u <= 1.0 + 1e-6 for u in all_u))
@@ -110,7 +121,8 @@ def main():
     from hybrid.replay_buffer import ReplayBuffer, pad_collate
     buf = ReplayBuffer(capacity=100, seed=0)
     for ep in range(2):
-        trs, _ = collect_episode(MOCK_CFG, scorer_kind="linear", temp=0.3, seed=ep)
+        trs, _ = collect_episode(MOCK_CFG, scorer_kind="linear", temp=0.3, seed=ep,
+                                 lam=0.8)
         buf.add_episode(trs)
     ck.check("buffer 累积", len(buf) >= len(trans), str(len(buf)))
     b = buf.sample(8)
@@ -122,8 +134,10 @@ def main():
     ck.check("edge_batch 界内", int(eb.max()) < b["obs"]["rider_feat"].shape[0])
     ck.check("edge_i 界内", int(ei.max()) < b["obs"]["rider_feat"].shape[1])
     ck.check("edge_j 界内", int(ej.max()) < b["obs"]["cand_feat"].shape[2])
-    ck.check("utility/boot 与边数对齐",
-             b["utility"].shape == eb.shape == b["boot"].shape)
+    ck.check("utility/boot_w/boot_g 与边数对齐",
+             b["utility"].shape == eb.shape == b["boot_w"].shape[:1] == b["boot_g"].shape[:1]
+             and b["boot_w"].shape[1] == len(t0["boot_w"])
+             and len(b["obs_boots"]) == len(t0["boot_w"]))
 
     # ------------------------------------------------------------------
     print("\n[4] evaluate：summary 键 + 铁律口径（同 seed 对拍）")
@@ -182,7 +196,8 @@ def main():
                                models_dir=td, logs_dir=td, seed=0,
                                num_parallel_workers=1, init_linear=True)
             for ep in range(2):
-                trs, _ = collect_episode(MOCK_CFG, scorer_kind="linear", temp=0.3, seed=ep)
+                trs, _ = collect_episode(MOCK_CFG, scorer_kind="linear", temp=0.3, seed=ep,
+                                         lam=0.8)
                 tr.buffer.add_episode(trs)
             tr.cfg["batch_size"] = 8
             batch = tr.buffer.sample(8)

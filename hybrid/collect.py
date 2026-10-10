@@ -41,6 +41,7 @@ def collect_episode(env_config: Dict[str, Any],
                     seed: int = 0,
                     n_step: int = 5,
                     gamma: float = 0.99,
+                    lam: float = 0.0,
                     hidden: int = 64,
                     num_heads: int = 4,
                     max_steps: int = 800,
@@ -50,6 +51,7 @@ def collect_episode(env_config: Dict[str, Any],
     transitions 结构见 replay_buffer.py 模块注释。行为策略：
     - temp=0：贪心（全部合法边参与匹配）；
     - temp>0：每骑手每轮按 softmax(q/temp) 采样一条候选边后贪心匹配。
+    - lam>0：TD(λ) 截断混合 bootstrap（exp-c）；lam=0 退化为单阶 n-step。
     """
     env = DeliveryEnv(env_config)
     env.reset(seed=seed)
@@ -70,22 +72,42 @@ def collect_episode(env_config: Dict[str, Any],
 
     stats = env.sim.get_final_stats()
     transitions = build_transitions(traces, env.sim, n_step=n_step,
-                                    gamma=gamma, done=done)
+                                    gamma=gamma, done=done, lam=lam)
     return transitions, stats
 
 
 def build_transitions(traces: List[Dict[str, Any]], sim,
                       n_step: int = 5, gamma: float = 0.99,
-                      done: bool = True) -> List[Dict[str, Any]]:
-    """traces → transitions：回填实现效用 + n-step bootstrap 链接。
+                      done: bool = True, lam: float = 0.0) -> List[Dict[str, Any]]:
+    """traces → transitions：回填实现效用 + λ-return 混合 bootstrap（exp-c）。
 
     效用公式复用 EdgeScorer.realized_utility（口径唯一，delivery_config 配置）：
       履约：  1 - w_tard·max(0,迟到)/60 - w_dist·距离/20
       未履约：-1
+
+    bootstrap 阶梯 ladder = [1,2,4,...,n_step]，λ 质量分配（截断几何聚合）：
+      w_k = λ^{n_{k-1}} − λ^{n_k}（k<L），w_L = λ^{n_{L-1}}（尾部质量归最后阶）
+      λ→0 退化单阶（1-step），λ→1 退化纯 n-step。目标：
+      y = u + Σ_k w_k·γ^{gap_k}·V(s_{t+n_k})，episode 终止的阶 gap 项记 0。
     """
     order_by_id = {o.order_id: o for o in sim.orders}
 
     T = len(traces)
+    # ---- λ-return 阶梯与质量分配 ----
+    if lam and lam > 0:
+        ladder = [n for n in (1, 2, 4, 8, 16, 32, 64) if n <= n_step]
+        if not ladder or ladder[-1] != n_step:
+            ladder.append(int(n_step))
+        ws: List[float] = []
+        prev = 0
+        for nn in ladder[:-1]:
+            ws.append(float(lam ** prev - lam ** nn))
+            prev = nn
+        ws.append(float(lam ** prev))
+    else:
+        ladder = [int(n_step)]
+        ws = [1.0]
+
     # order_id → (t, edge_pos_in_trace) 索引；同单只记首次派入
     assign_at: Dict[int, Tuple[int, int]] = {}
     for t, tr in enumerate(traces):
@@ -107,15 +129,23 @@ def build_transitions(traces: List[Dict[str, Any]], sim,
     for t, tr in enumerate(traces):
         if not tr["matched"]:
             continue  # 无匹配 epoch 不产生训练边
-        t_boot = min(t + n_step, T - 1)
-        boot = float(gamma ** n_step) if (t + n_step < T or not done) else 0.0
+        obs_boots: List[Any] = []
+        boot_g: List[float] = []
+        for nn in ladder:
+            t_boot = min(t + nn, T - 1)
+            obs_boots.append(traces[t_boot]["obs"])
+            if t + nn < T or not done:
+                boot_g.append(float(gamma ** (t_boot - t)))
+            else:
+                boot_g.append(0.0)  # episode 已终止，无 bootstrap
         edges = [(int(i), int(j), int(oid)) for (i, j, oid, _d) in tr["matched"]]
         transitions.append({
             "obs": tr["obs"],
             "edges": edges,
             "utility": utilities[t],
-            "obs_boot": traces[t_boot]["obs"],
-            "boot": boot,
+            "obs_boots": obs_boots,
+            "boot_w": list(ws),
+            "boot_g": boot_g,
         })
     return transitions
 

@@ -6,8 +6,9 @@ Transition（每个决策 epoch 一条）：
   obs       : obs_pack_t（build_all_pairs_set_obs 输出 dict）
   edges     : List[(i, j, order_id)]      该 epoch 被匹配的边
   utility   : List[float]                 episode 末回填的实现效用（与 edges 对齐）
-  obs_boot  : n_step 后的 obs_pack（截断到 episode 末）
-  boot      : γ^n（可 bootstrap）或 0.0（episode 已终止）
+  obs_boots : List[obs_pack]              λ-return 阶梯各级 bootstrap obs（exp-c）
+  boot_w    : List[float]                 阶梯 λ 质量权重（和为 1）
+  boot_g    : List[float]                 各级 γ^gap（episode 已终止的级为 0）
 """
 
 from __future__ import annotations
@@ -78,10 +79,10 @@ class ReplayBuffer:
 
         返回：
           obs       : pad_collate(obs_t)
-          obs_boot  : pad_collate(obs_boot)
+          obs_boots : List[pad_collate]   λ-return 阶梯各级 bootstrap obs（exp-c）
           edge_batch/edge_i/edge_j : [E] 每条训练边的 (batch_idx, rider_i, slot_j)
           utility   : [E] 回填的实现效用
-          boot      : [E] γ^n 或 0
+          boot_w    : [E,L] 阶梯 λ 质量权重   boot_g : [E,L] 各级 γ^gap
         """
         n = min(batch_size, len(self._data))
         if recent_frac > 0 and recent_window > 0 and len(self._data) > 1:
@@ -95,24 +96,29 @@ class ReplayBuffer:
             self._rng.shuffle(idx)
         else:
             idx = self._rng.sample(range(len(self._data)), k=n)
-        obs_list, boot_list = [], []
-        e_b, e_i, e_j, e_u, e_boot = [], [], [], [], []
+        L = len(self._data[idx[0]]["boot_w"])
+        obs_list = []
+        boot_lists: List[List[Any]] = [[] for _ in range(L)]
+        e_b, e_i, e_j, e_u, e_w, e_g = [], [], [], [], [], []
         for bi, di in enumerate(idx):
             tr = self._data[di]
             obs_list.append(tr["obs"])
-            boot_list.append(tr["obs_boot"])
+            for k in range(L):
+                boot_lists[k].append(tr["obs_boots"][k])
             for (i, j, _oid), u in zip(tr["edges"], tr["utility"]):
                 e_b.append(bi)
                 e_i.append(i)
                 e_j.append(j)
                 e_u.append(u)
-                e_boot.append(tr["boot"])
+                e_w.append(tr["boot_w"])
+                e_g.append(tr["boot_g"])
         return {
             "obs": pad_collate(obs_list),
-            "obs_boot": pad_collate(boot_list),
+            "obs_boots": [pad_collate(bl) for bl in boot_lists],
             "edge_batch": np.asarray(e_b, np.int32),
             "edge_i": np.asarray(e_i, np.int32),
             "edge_j": np.asarray(e_j, np.int32),
             "utility": np.asarray(e_u, np.float32),
-            "boot": np.asarray(e_boot, np.float32),
+            "boot_w": np.asarray(e_w, np.float32),
+            "boot_g": np.asarray(e_g, np.float32),
         }

@@ -244,6 +244,7 @@ class HybridTrainer:
         heads = self.cfg["num_heads"]
         n_step = self.cfg["n_step"]
         gamma = self.cfg["gamma"]
+        lam = float(self.cfg.get("lam", 0.0))
 
         # 导出当前在线网络为临时 npz（worker 纯 numpy 加载）
         temp_npz = None
@@ -262,6 +263,7 @@ class HybridTrainer:
                 "seed": self.seed + self.iter_count * 1000 + i,
                 "n_step": n_step,
                 "gamma": gamma,
+                "lam": lam,
                 "hidden": hidden,
                 "num_heads": heads,
                 "max_steps": 800,
@@ -313,31 +315,33 @@ class HybridTrainer:
 
     def _td_update(self, batch: Dict[str, Any]) -> Tuple[float, float]:
         obs = batch["obs"]               # pad_collate dict
-        obs_boot = batch["obs_boot"]
         edge_batch = tf.constant(batch["edge_batch"], dtype=tf.int32)
         edge_i = tf.constant(batch["edge_i"], dtype=tf.int32)
         edge_j = tf.constant(batch["edge_j"], dtype=tf.int32)
         utility = tf.constant(batch["utility"], dtype=tf.float32)
-        boot = tf.constant(batch["boot"], dtype=tf.float32)
+        boot_w = tf.constant(batch["boot_w"], dtype=tf.float32)      # [E,L]
+        boot_g = tf.constant(batch["boot_g"], dtype=tf.float32)      # [E,L]
 
         indices = tf.stack([edge_batch, edge_i, edge_j], axis=1)
+        bi_indices = tf.stack([edge_batch, edge_i], axis=1)
 
         with tf.GradientTape() as tape:
             q_online = self.online_net(obs, training=True)            # [B,N,K]
             q_pred = tf.gather_nd(q_online, indices)                  # [E]
 
-            # 目标网络 bootstrap：取 bootstrap obs 中对应骑手 i 的最大 q
-            q_target_boot = self.target_net(obs_boot, training=False) # [B,N,K]
-            boot_mask = tf.cast(obs_boot["cand_mask"], q_target_boot.dtype)  # [B,N,K]
-            masked_q = q_target_boot * boot_mask + (1.0 - boot_mask) * float(NEG_INF)
-            max_q = tf.reduce_max(masked_q, axis=-1)                  # [B,N]
-
-            has_cand = tf.reduce_max(boot_mask, axis=-1)              # [B,N]
-            max_q_bi = tf.gather_nd(max_q, tf.stack([edge_batch, edge_i], axis=1))
-            has_cand_e = tf.gather_nd(has_cand, tf.stack([edge_batch, edge_i], axis=1))
-            max_q_bi = tf.where(tf.cast(has_cand_e, tf.bool), max_q_bi, 0.0)
-
-            y = utility + boot * max_q_bi
+            # λ-return 混合 bootstrap（exp-c）：
+            # y = u + Σ_k w_k·γ^gap_k·max_q(s_{t+n_k})，各级目标网络前向
+            y = utility
+            for k, obs_k in enumerate(batch["obs_boots"]):
+                q_t = self.target_net(obs_k, training=False)          # [B,N,K]
+                boot_mask = tf.cast(obs_k["cand_mask"], q_t.dtype)    # [B,N,K]
+                masked_q = q_t * boot_mask + (1.0 - boot_mask) * float(NEG_INF)
+                max_q = tf.reduce_max(masked_q, axis=-1)              # [B,N]
+                has_cand = tf.reduce_max(boot_mask, axis=-1)          # [B,N]
+                max_q_bi = tf.gather_nd(max_q, bi_indices)
+                has_cand_e = tf.gather_nd(has_cand, bi_indices)
+                max_q_bi = tf.where(tf.cast(has_cand_e, tf.bool), max_q_bi, 0.0)
+                y = y + boot_w[:, k] * boot_g[:, k] * max_q_bi
             loss = tf.reduce_mean(tf.square(q_pred - tf.stop_gradient(y)))
 
         grads = tape.gradient(loss, self.online_net.trainable_variables)

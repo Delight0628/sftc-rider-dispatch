@@ -594,6 +594,7 @@ HYBRID_TRAINING_CONFIG = {
     "lr_min": 1e-5,               # 保护机制 lr 下限（减半不得低于此值，防学习冻结）
     "gamma": 0.99,
     "n_step": 16,                 # n-step TD 步数（履约延迟奖励长程回填）
+    "lam": 0.8,                   # TD(λ) 混合 bootstrap（exp-c）；0=纯 n-step
     "temp_start": 0.5,            # 行为策略 softmax 温度（探索）
     "temp_end": 0.1,
     "temp_anneal_episodes": 200,  # 温度线性退火区间
