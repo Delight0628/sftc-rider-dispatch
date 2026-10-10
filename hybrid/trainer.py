@@ -98,8 +98,9 @@ class HybridTrainer:
                               for w in self.online_net.get_weights()]
         self._save_ckpt("init")
 
-        # 回滚 / best 状态
-        self.best_score = -1e9
+        # 回滚 / best 状态（resume_best_score：续训时继承上一轮 best 基线，
+        # 低于基线的 eval 不刷新 best，回滚目标锁定为高点权重）
+        self.best_score = float(self.cfg.get("resume_best_score", -1e9))
         self.best_ckpt_base: Optional[str] = None
         self.poor_streak = 0
         self.grace_left = 0          # 新 best 后宽限 eval 轮数（期内跳过回滚保护）

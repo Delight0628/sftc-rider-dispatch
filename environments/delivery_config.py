@@ -590,26 +590,27 @@ HYBRID_DISPATCH_CONFIG = {
 
 # Hybrid 训练配置（docs/hybrid_implementation.md §5；与代码严格一致）
 HYBRID_TRAINING_CONFIG = {
-    "lr": 1e-3,
-    "lr_min": 5e-5,               # 保护机制 lr 下限（减半不得低于此值，防学习冻结）
+    "lr": 5e-4,
+    "lr_min": 1e-5,               # 保护机制 lr 下限（减半不得低于此值，防学习冻结）
     "gamma": 0.99,
     "n_step": 8,                  # n-step TD 步数（缓解履约延迟奖励）
     "temp_start": 0.5,            # 行为策略 softmax 温度（探索）
     "temp_end": 0.1,
     "temp_anneal_episodes": 200,  # 温度线性退火区间
     "buffer_size": 10000,
-    "batch_size": 64,
+    "batch_size": 96,
     "recent_frac": 0.5,           # recent 优先采样比例（抑 off-policy staleness）
     "recent_window": 2000,        # recent 采样窗口（最近 N 条）
     "target_soft_tau": 0.005,     # 目标网络软更新
     "hidden_dim": 64,
     "num_heads": 4,
     "episodes_per_iter": 4,       # 每次迭代的采集 episode 数
-    "updates_per_iter": 8,        # 每次迭代的 mini-batch 更新数
+    "updates_per_iter": 4,        # 每次迭代的 mini-batch 更新数（降噪：TD 更新噪声主导时减少破坏性更新）
     "eval_every": 10,             # 每隔多少迭代做一次对拍评估
     "eval_episodes": 3,
     "eval_seed_base": 90000,      # 固定 eval seed 集基址（跨 iter 同场景对拍，消方差）
-    "rollback_patience": 4,       # neural 连续不赢 linear 的轮数 → 回滚
-    "rollback_grace_evals": 3,    # 新 best 后宽限 eval 轮数（期内跳过回滚保护，允许逃离 best 邻域）
+    "rollback_patience": 2,       # neural 连续不赢 linear 的轮数 → 回滚（钉住高点）
+    "rollback_grace_evals": 0,    # 新 best 后宽限 eval 轮数（默认关）
+    "resume_best_score": -1e9,    # 续训时继承的 best 分数基线（低于此不刷新 best）
     "max_grad_norm": 5.0,
 }
