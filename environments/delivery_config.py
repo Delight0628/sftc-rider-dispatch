@@ -561,10 +561,11 @@ def calculate_delivery_episode_score(kpi_results: Dict[str, float], config: Dict
 #     对应 docs/research_dispatch_algorithm_survey.md §5 推荐架构
 # =============================================================================
 HYBRID_DISPATCH_CONFIG = {
-    # 边特征 12 维权重（EdgeScorer.EDGE_FEATURE_NAMES 对齐）：
+    # 边特征 16 维权重（EdgeScorer.build_features 对齐；12 基础 + exp-b 4 项）：
     # bias, order_urgency, on_time_feasible, late_norm(-), to_pickup_norm(-),
     # route_norm(-), rider_load(-), free_delay_norm(-), priority_norm,
-    # is_urgent, congestion(-), slack_norm
+    # is_urgent, congestion(-), slack_norm,
+    # eta_congestion(-), dropoff_cluster(+), pickup_contention(-), rider_fatigue(-)
     "edge_weights": [
         0.0,    # bias
         1.5,    # order_urgency   ：紧迫单优先（EDD 分量）
@@ -578,6 +579,10 @@ HYBRID_DISPATCH_CONFIG = {
         0.8,    # is_urgent
         -0.3,   # congestion
         0.4,    # slack_norm      ：同等条件偏好安全余量
+        -0.3,   # eta_congestion  ：拥堵调整 ETA 越大越差（exp-b）
+        0.2,    # dropoff_cluster ：送达点簇 → 顺路/合单潜力（exp-b）
+        -0.2,   # pickup_contention：取餐点骑手扎堆竞争（exp-b）
+        -0.2,   # rider_fatigue   ：累计里程疲劳（exp-b）
     ],
     "slack_norm": 120.0,          # 紧迫/余量归一基准（分钟），与 obs slack_time_norm 一致
     "w_tard": 2.0,                # 学习目标中迟到项权重（realized_utility）

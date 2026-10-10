@@ -77,7 +77,7 @@ class NeuralEdgeScorer(BaseEdgeScorer):
             "rider_mask": np.ones((1, 1), np.float32),
             "cand_feat": np.zeros((1, 1, 1, 12), np.float32),
             "cand_mask": np.ones((1, 1, 1), np.float32),
-            "edge_feat": np.zeros((1, 1, 1, 12), np.float32),
+            "edge_feat": np.zeros((1, 1, 1, 16), np.float32),
             "global_feat": np.zeros((1, 5), np.float32),
         }
         net(dummy, training=False)

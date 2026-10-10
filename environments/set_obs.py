@@ -192,7 +192,7 @@ def build_global_set_state(sim) -> Dict[str, Any]:
 # 集中式打分观测（hybrid 主干）：全对候选矩阵
 # 约定见 docs/hybrid_implementation.md §2
 # =============================================================================
-EDGE_FEAT_DIM = 12
+EDGE_FEAT_DIM = 16  # 12 基础 + exp-b 4 项（拥堵ETA/送达簇/竞争/疲劳）
 
 
 def build_all_pairs_set_obs(sim) -> Dict[str, Any]:

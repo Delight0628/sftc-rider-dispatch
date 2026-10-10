@@ -46,6 +46,10 @@ EDGE_FEATURE_NAMES = (
     "is_urgent",         # 是否紧急单
     "congestion",        # 取餐点拥堵
     "slack_norm",        # 配对安全余量（同等条件偏好更稳的配对）
+    "eta_congestion",    # 拥堵调整 ETA（exp-b）
+    "dropoff_cluster",   # 送达点订单簇：顺路/合单潜力（exp-b）
+    "pickup_contention", # 取餐点骑手竞争（exp-b）
+    "rider_fatigue",     # 骑手累计里程疲劳（exp-b）
 )
 
 
@@ -79,7 +83,7 @@ class EdgeScorer:
     def build_features(sim, rider, order, start_pos: Tuple[float, float],
                        start_time: float, now: float,
                        virt_load: int = 0) -> np.ndarray:
-        """边特征向量（12 维，与 EDGE_FEATURE_NAMES 对齐）。
+        """边特征向量（16 维，与 EDGE_FEATURE_NAMES 对齐）。
 
         start_pos / start_time / virt_load 为"虚拟执行链"投影：
         同一决策步为骑手连派多单时，后一单的特征按前单完成后的状态估算。
@@ -90,6 +94,23 @@ class EdgeScorer:
         slack = order.due_date - est["deliver_time"]
         due_rel = order.due_date - now
         compressed = sim._compressed
+        # ---- exp-b 新特征：ETA 拥堵 / 送达簇 / 取餐竞争 / 骑手疲劳 ----
+        congestion = sim._pickup_congestion(order)
+        radius = float(sim._geo.get("congestion_radius_km", 2.0))
+        dropoff_cluster = 0  # 送达点订单簇：池内 dropoff 邻近单数（顺路/合单潜力）
+        for other in sim.pool:
+            if other is order:
+                continue
+            if np.hypot(other.dropoff[0] - order.dropoff[0],
+                        other.dropoff[1] - order.dropoff[1]) <= radius:
+                dropoff_cluster += 1
+        contention = 0  # 取餐点竞争：邻近骑手数（不含自己）
+        for r2 in sim.riders.values():
+            if r2 is rider:
+                continue
+            if np.hypot(r2.position[0] - order.pickup[0],
+                        r2.position[1] - order.pickup[1]) <= radius:
+                contention += 1
         feats = np.asarray([
             1.0,
             float(np.clip(1.0 - due_rel / slack_norm, -1.0, 2.0)),      # 越紧迫越大
@@ -101,8 +122,13 @@ class EdgeScorer:
             compressed(max(0.0, start_time - now), 60.0),
             (order.priority - 1) / 2.0,
             1.0 if order.priority == 1 else 0.0,
-            sim._pickup_congestion(order),
+            congestion,
             float(np.clip(slack / slack_norm, -3.0, 3.0)),
+            # ---- 12-15：exp-b ----
+            compressed(est["total_time"] * (1.0 + congestion), 120.0),   # 拥堵调整 ETA
+            min(1.0, dropoff_cluster / 5.0),                             # 送达点订单簇
+            contention / max(1, len(sim.riders)),                        # 取餐点竞争
+            compressed(float(getattr(rider, "travel_distance", 0.0)), 50.0),  # 骑手疲劳
         ], dtype=np.float64)
         return feats
 

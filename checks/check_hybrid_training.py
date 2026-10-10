@@ -76,6 +76,24 @@ def main():
     ck.check("edge_feat bias=1（mask 处）",
              bool(np.allclose(obs["edge_feat"][..., 0][m], 1.0)))
 
+    # ---- exp-b 边特征工程：16 维 + 新特征值域 ----
+    ck.check("exp-b edge_weights 长度 = EDGE_FEAT_DIM",
+             len(HYBRID_DISPATCH_CONFIG["edge_weights"]) == EDGE_FEAT_DIM,
+             f"{len(HYBRID_DISPATCH_CONFIG['edge_weights'])} vs {EDGE_FEAT_DIM}")
+    from environments.hybrid_dispatch import EdgeScorer as _ES
+    for _ in range(3):  # 推进几步让订单入池（t=0 池可能为空）
+        env.step({a: [0] for a in env.agents})
+    _r0 = env.sim.riders[env.sim.rider_names[0]]
+    _o0 = env.sim.pool[0] if env.sim.pool else None
+    if _o0 is not None:
+        _pos, _free = _r0.projected_free()
+        _f = _ES.build_features(env.sim, _r0, _o0, _pos, 0.0, 0.0)
+        ck.check("exp-b build_features 长度 = EDGE_FEAT_DIM",
+                 len(_f) == EDGE_FEAT_DIM, str(len(_f)))
+        ck.check("exp-b 新特征值域 [0,1]",
+                 all(0.0 - 1e-9 <= _f[d] <= 1.0 + 1e-9 for d in (12, 13, 14, 15)),
+                 str([float(_f[d]) for d in (12, 13, 14, 15)]))
+
     # ------------------------------------------------------------------
     print("\n[2] collect_episode 采集结构")
     from hybrid.collect import collect_episode
