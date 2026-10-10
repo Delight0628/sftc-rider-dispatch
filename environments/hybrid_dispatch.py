@@ -119,14 +119,33 @@ class EdgeScorer:
         self.update_count += 1
 
     @staticmethod
-    def realized_utility(order, distance: float) -> float:
-        """边的实现效用（学习目标）：准时 + 压迟到 + 里程项，口径与打分一致。"""
+    def realized_utility(order, distance: float,
+                         sim_end: Optional[float] = None) -> float:
+        """边的实现效用（学习目标）：取餐/送达两段 shaping（exp-a）。
+
+        取餐段 u_pick    = 1 − ready→取到餐等待/pick_norm（及时取餐）
+        送达段 u_deliver = 1 − w_tard·迟到/60 − w_dist·距离/20（原口径不变）
+        组合             = w_pick·u_pick + (1−w_pick)·u_deliver
+        未履约：已取餐按取餐段得分 + 送达段记 −1；未取餐整体 −1。
+        """
+        cfg = HYBRID_DISPATCH_CONFIG
+        w_pick = float(cfg.get("w_pick", 0.3))
+        pick_norm = float(cfg.get("pick_norm", 60.0))
+
+        pick_time = order.planned_pickup_time
+        picked_up = (pick_time is not None
+                     and (sim_end is None or pick_time <= sim_end))
+        u_pick = 1.0 - max(0.0, (pick_time or order.ready_time) - order.ready_time) / pick_norm
+
         if order.actual_deliver_time is None:
-            return -1.0  # 未履约
+            if not picked_up:
+                return -1.0  # 未取餐未履约
+            return float(w_pick * u_pick + (1.0 - w_pick) * (-1.0))
         tard = max(0.0, order.actual_deliver_time - order.due_date)
-        return float(1.0
-                     - HYBRID_DISPATCH_CONFIG["w_tard"] * (tard / 60.0)
-                     - HYBRID_DISPATCH_CONFIG["w_dist"] * (distance / 20.0))
+        u_deliver = float(1.0
+                          - cfg["w_tard"] * (tard / 60.0)
+                          - cfg["w_dist"] * (distance / 20.0))
+        return float(w_pick * u_pick + (1.0 - w_pick) * u_deliver)
 
 
 # =============================================================================
@@ -366,7 +385,8 @@ class HybridDispatcher:
             order = self._order_by_id.get(oid)
             if order is None:
                 continue
-            target = self.scorer.realized_utility(order, dist)
+            target = self.scorer.realized_utility(
+                order, dist, sim_end=float(getattr(self.env.sim, "_max_sim_time", 0.0) or 0.0) or None)
             self.scorer.update(feats, target)
             n += 1
         self._records.clear()

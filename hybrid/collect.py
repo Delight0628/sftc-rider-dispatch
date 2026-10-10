@@ -80,10 +80,12 @@ def build_transitions(traces: List[Dict[str, Any]], sim,
     """traces → transitions：回填实现效用 + n-step bootstrap 链接。
 
     效用公式复用 EdgeScorer.realized_utility（口径唯一，delivery_config 配置）：
-      履约：  1 - w_tard·max(0,迟到)/60 - w_dist·距离/20
-      未履约：-1
+      取餐/送达两段 shaping（exp-a）：
+        w_pick·(1 - 取餐等待/pick_norm) + (1-w_pick)·(1 - w_tard·迟到/60 - w_dist·距离/20)
+      未履约：已取餐按取餐段得分 + 送达段 -1；未取餐 -1
     """
     order_by_id = {o.order_id: o for o in sim.orders}
+    sim_end = float(getattr(sim, "_max_sim_time", 0.0) or 0.0) or None
 
     T = len(traces)
     # order_id → (t, edge_pos_in_trace) 索引；同单只记首次派入
@@ -101,7 +103,7 @@ def build_transitions(traces: List[Dict[str, Any]], sim,
         if order is None:
             continue
         dist = traces[t]["matched"][e_pos][3]
-        utilities[t][e_pos] = EdgeScorer.realized_utility(order, dist)
+        utilities[t][e_pos] = EdgeScorer.realized_utility(order, dist, sim_end=sim_end)
 
     transitions: List[Dict[str, Any]] = []
     for t, tr in enumerate(traces):

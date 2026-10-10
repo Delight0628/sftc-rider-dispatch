@@ -105,6 +105,43 @@ def main():
     ck.check("realized_utility 公式唯一口径",
              hasattr(EdgeScorer, "realized_utility"))
 
+    # ---- exp-a 分段 shaping：取餐/送达两段口径回归 ----
+    from environments.delivery_env import DeliveryOrder
+    _cfg = HYBRID_DISPATCH_CONFIG
+    _o = DeliveryOrder(1, "food", (0.0, 0.0), (1.0, 0.0), ready_time=10.0,
+                       due_date=100.0, priority=2, weight=1.0)
+    _o.planned_pickup_time = 40.0       # ready 后 30 分钟取到餐
+    _o.actual_deliver_time = 90.0       # 准时送达
+    _u = EdgeScorer.realized_utility(_o, 20.0, sim_end=200.0)
+    _u_pick = 1.0 - 30.0 / _cfg["pick_norm"]
+    _u_deliver = 1.0 - _cfg["w_dist"] * 20.0 / 20.0
+    _expect = _cfg["w_pick"] * _u_pick + (1 - _cfg["w_pick"]) * _u_deliver
+    ck.check("exp-a 履约分段公式一致", abs(_u - _expect) < 1e-9,
+             f"{_u:.4f} vs {_expect:.4f}")
+    _o.actual_deliver_time = None       # 已取餐但未履约：送达段记 -1
+    _u2 = EdgeScorer.realized_utility(_o, 20.0, sim_end=200.0)
+    _expect2 = _cfg["w_pick"] * _u_pick + (1 - _cfg["w_pick"]) * (-1.0)
+    ck.check("exp-a 未履约已取餐部分分段", abs(_u2 - _expect2) < 1e-9,
+             f"{_u2:.4f} vs {_expect2:.4f}")
+    _u3 = EdgeScorer.realized_utility(_o, 20.0, sim_end=20.0)  # sim 在取餐前结束
+    ck.check("exp-a 未取餐未履约整体 -1", abs(_u3 + 1.0) < 1e-9, str(_u3))
+    # 派单链路记录 planned_pickup_time
+    from environments.hybrid_dispatch import HybridDispatcher
+    env_a = DeliveryEnv(MOCK_CFG)
+    env_a.reset(seed=2)
+    disp_a = HybridDispatcher(env_a)
+    for _ in range(20):
+        acts = disp_a.act(temp=0.0)
+        _, _, terms, truncs, _ = env_a.step(acts)
+        if all(terms.values()) or all(truncs.values()):
+            break
+    assigned = [o for o in env_a.sim.orders if o.assigned_rider is not None]
+    ck.check("exp-a 派单记录 planned_pickup_time",
+             len(assigned) > 0 and all(o.planned_pickup_time is not None for o in assigned),
+             f"assigned={len(assigned)}")
+    ck.check("exp-a pickup ≤ deliver 时序",
+             all(o.planned_pickup_time <= o.planned_deliver_time for o in assigned))
+
     # ------------------------------------------------------------------
     print("\n[3] ReplayBuffer / pad_collate 变长 N")
     from hybrid.replay_buffer import ReplayBuffer, pad_collate

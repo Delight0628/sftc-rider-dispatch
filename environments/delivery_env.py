@@ -57,7 +57,7 @@ class DeliveryOrder:
     __slots__ = ("order_id", "order_type", "type_id", "pickup", "dropoff",
                  "ready_time", "due_date", "priority", "weight", "state",
                  "assigned_rider", "planned_deliver_time", "actual_deliver_time",
-                 "planned_distance", "pull_time", "slack_at_pull")
+                 "planned_pickup_time", "planned_distance", "pull_time", "slack_at_pull")
 
     def __init__(self, order_id: int, order_type: str, pickup: Tuple[float, float],
                  dropoff: Tuple[float, float], ready_time: float, due_date: float,
@@ -76,6 +76,7 @@ class DeliveryOrder:
         self.assigned_rider: Optional[str] = None
         self.planned_deliver_time: Optional[float] = None
         self.actual_deliver_time: Optional[float] = None
+        self.planned_pickup_time: Optional[float] = None
         self.planned_distance: float = 0.0
         self.pull_time: Optional[float] = None
         self.slack_at_pull: Optional[float] = None
@@ -441,6 +442,7 @@ class DeliverySim:
         return {
             "leg1_time": t1, "leg2_time": t2,
             "total_time": deliver_time - start_time,
+            "pickup_time": pickup_done,
             "deliver_time": deliver_time,
             "distance": d1 + d2,
         }
@@ -773,6 +775,7 @@ class DeliverySim:
                 start = max(decision_time, free_t if free_t > 0 else decision_time)
                 est = self._estimate_route(rider, target, pos, start)
                 target.planned_deliver_time = est["deliver_time"]
+                target.planned_pickup_time = est["pickup_time"]
                 target.planned_distance = est["distance"]
                 target.pull_time = decision_time
                 target.slack_at_pull = target.due_date - est["deliver_time"]

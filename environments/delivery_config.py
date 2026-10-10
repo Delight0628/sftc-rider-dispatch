@@ -582,6 +582,8 @@ HYBRID_DISPATCH_CONFIG = {
     "slack_norm": 120.0,          # 紧迫/余量归一基准（分钟），与 obs slack_time_norm 一致
     "w_tard": 2.0,                # 学习目标中迟到项权重（realized_utility）
     "w_dist": 0.5,                # 学习目标中里程项权重
+    "w_pick": 0.3,                # 分段 shaping：取餐段权重（送达段 1-w_pick）
+    "pick_norm": 60.0,            # 取餐段归一基准（分钟）：ready→取到餐等待
     "learn": False,               # 默认关闭在线更新（评估确定性）；实验打开
     "learn_lr": 0.01,
     "max_assign_per_step": 8,     # 单决策步单骑手最大连派单数（容量 b-matching 轮数上限）
