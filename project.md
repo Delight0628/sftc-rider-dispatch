@@ -86,7 +86,7 @@
 | 维度 | 定义 |
 |------|------|
 | 范式 | **单智能体 RL（组合动作）+ 组合解码**：学习边效用，匹配层保证可行性 |
-| 学习信号 | **off-policy n-step TD**（fitted-Q 式 MSE，n=5，γ=0.99，目标网络软更新 τ=0.005） |
+| 学习信号 | **off-policy n-step TD**（fitted-Q 式 MSE，n=16（1013 起），γ=0.99，目标网络软更新 τ=0.005） |
 | 学的东西 | 边效用 `q(骑手i, 订单j | 全局上下文)`（不是策略 logits） |
 | 决策 | 每个决策 epoch：边打分 → 约束二分图匹配（带容量分轮）→ 滚动重优化 |
 | 状态 | set 观测：rider_feat `[N,8]` + cand_feat `[N,K,12]` + global_feat `[5]` + edge_feat `[N,K,12]` |
@@ -119,6 +119,36 @@
 - 真实 xlsx：吃 **真实坐标、时间、完成分布**，不是理想 mock。
 - Early-stop：对拍评估连续 2 轮不赢 linear hybrid 基线 → 回滚最近赢的 checkpoint。
 - 评估铁律：**neural ≥ linear hybrid > 全部启发式（nearest/EDD/fifo）** 才算有效。
+
+### 5.1 训练路线、基准与实测（2026-10-09 ~ 10-10 四轮迭代）
+
+**参照基准（对拍矩阵，同口径同解码器）**：
+
+| 基准 | 定义 | 来源 |
+|------|------|------|
+| edd | 最早送达优先启发式派单 | 经典规则基线，不学习 |
+| linear | 线性边效用 + **同一**贪心匹配解码器 | 相同边特征拟合线性 q(i,j)，隔离「学习打分」本身的贡献 |
+| neural | EdgeScorer（MLP）+ 同一解码器 | 训练主体 |
+
+**目标定义**：neural eval 得分 ≥ linear，逼近上限。得分 = 边效用 `realized_utility = 1 − w_tard·tard/60 − w_dist·dist/20`（未履约记 −1）；果洛真实数据 + 固定 eval seed（seed_base=90000）保证轮间严格可比。
+
+**四轮实测轨迹**（每轮 400 iters、12 ep/iter、6 workers、果洛真实单）：
+
+| 轮次 | 方案 | eval 均值 | best | ≥linear | 结论 |
+|------|------|-----------|------|---------|------|
+| 1010 | 机制修正（lr 下限/init 回滚兜底/固定 eval seed/recent 采样） | 0.645 | **0.6726**@90 | 8/40 | 基线确立 |
+| 1011 | 放宽保护（patience 4/grace 3）自 1010 best 续训 | 0.597 ✗ | — | 0/40 | TD 噪声主导，放宽方向错误 |
+| 1012 | 收紧+降噪（lr 5e-4/updates 4/patience 2/best_score 继承） | 0.658 | 0.6726(继承) | 10/40 | +0.06，方向有效 |
+| 1013 | 容量+目标（hidden 64→128/n_step 8→16/updates 2） | **0.665** | **0.6726**@80 | **13/40** | 优化侧到顶 |
+
+**核心结论**：
+1. TD 更新噪声主导训练净效应；0.64-0.67 高分带 = **回滚钉住效应**（保护机制防变坏有效，但高分靠钉住幸运快照而非学习爬升）。
+2. best 连续两轮钉死 0.6726（容量翻倍+目标加倍+噪声减半仍不破）→ 上限来自**学习目标/特征本身**（realized_utility 口径、12 维边特征信息量），非模型容量或优化侧。
+3. 边际收益 +0.06 → +0.007 → 0，优化侧（lr/容量/采样/保护）手段穷尽，收尾。
+
+**下阶段（范式级，三分支实验）**：① realized_utility 加分段 shaping（取餐/送达中间奖励）；② 边特征工程（ETA 拥堵/骑手疲劳/订单簇）；③ n-step 换 eligibility/λ-return。
+实施路线：三个 git 分支各实现一项 → 逐一上服务器完整训练（400 iters）实时盯盘 → 三方向交叉对比 → **融合最佳组合再训练一轮** → 全部产物归档本地。
+详细记录：`docs/draft_hybrid_tuning_1011.md`。
 
 ---
 
@@ -263,6 +293,7 @@ runs/                             # 远端训练产物（代码同路径）
 
 | 日期 | 变更 |
 |------|------|
+| 2026-10-10 | **四轮训练迭代（1010-1013）全过程并入 §5.1**：机制修正→放宽失败→收紧+降噪→容量+目标；best 钉死 0.6726，判定优化侧到顶，上限在学习目标/特征（realized_utility 口径、12 维边特征）；下阶段三分支范式实验（shaping / 边特征 / λ-return）→交叉对比→融合复训；详见 `docs/draft_hybrid_tuning_1011.md` |
 | 2026-10-08 | **MAPPO/CTDE 完全替换为 Hybrid 派单框架**（边效用网络+off-policy TD+约束匹配+滚动重优化）；mappo/ 与 auto_train.py 归档至 archive/；训练入口改 `hybrid_train.py`；观测主干改 set 观测（N 可变）；依据 `docs/research_dispatch_algorithm_survey.md` |
 | 2026-10-08 | **Hybrid 训练链路完成并全量校验通过**：hybrid/{edge_value_net,scorers,replay_buffer,collect,evaluate,trainer}.py + hybrid_train.py；checks 30/30、27/27、22/22、14/14；mock 冒烟 neural 0.9097≥linear 0.9095≫启发式 0.666；修复 warm-start ±x 双通道/目标网络硬拷贝/npz 键名/order_id int64 四个关键 bug |
 | 2026-09-30 | **AGENTS.md → project.md**；全景图；定稿 Live 调度大屏；订单采样 ready+due；去偏好（并行双塔） |
