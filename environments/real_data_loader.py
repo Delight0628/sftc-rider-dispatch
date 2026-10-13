@@ -24,10 +24,28 @@ from .delivery_config import ORDER_TYPE_LIST
 EARTH_KM_PER_DEG = 111.0  # 粗略
 
 
+# 数仓空值标记（含单/双反斜杠 \N；2026-10 新数据用 \\N）
+_NULL_MARKS = (None, "", "NULL", "null", "None", "nan", "NaN", "N/A", "\\N", "\\\\N")
+
+
 def _first(row: Dict[str, Any], candidates: Sequence[str]) -> Any:
     for c in candidates:
-        if c in row and row[c] not in (None, "", "NULL", "null"):
+        if c in row and row[c] not in _NULL_MARKS:
             return row[c]
+    return None
+
+
+def _first_due(row: Dict[str, Any], candidates: Sequence[str]) -> Any:
+    """due 时刻专用：跳过空值与非 epoch 值（如 0 / 相对分钟脏值）。
+
+    2026-10 新数据（rl_hybrid_dispatch_data）中 latest_delivery_time 多为
+    空或相对量，若不校验量级会短路回退链、丢弃 expect_time 真实承诺时刻。
+    """
+    for c in candidates:
+        v = _first(row, (c,))
+        f = _to_float(v, None)
+        if f is not None and f > 1e8:  # epoch 秒(1e9+) / 毫秒(1e12+)
+            return v
     return None
 
 
@@ -99,8 +117,14 @@ def load_rows(path: str | Path, max_rows: Optional[int] = None) -> List[Dict[str
             rows = data if isinstance(data, list) else data.get("rows", [])
         else:
             sample = text[:4096]
-            dialect = csv.Sniffer().sniff(sample, delimiters=",\t;|")
-            rows = list(csv.DictReader(text.splitlines(), dialect=dialect))
+            if suffix == ".csv":
+                rows = list(csv.DictReader(text.splitlines()))
+            else:
+                try:
+                    dialect = csv.Sniffer().sniff(sample, delimiters=",\t;|")
+                    rows = list(csv.DictReader(text.splitlines(), dialect=dialect))
+                except csv.Error:
+                    rows = list(csv.DictReader(text.splitlines()))
     if max_rows is not None:
         rows = rows[: int(max_rows)]
     return rows
@@ -193,7 +217,8 @@ def extract_order_core(row: Dict[str, Any]) -> Dict[str, Any]:
     """一行宽表 → 中间语义 dict（绝对分钟时刻 + 经纬度 + kg）。"""
     out: Dict[str, Any] = {"raw": row}
     for key, cands in ORDER_CORE_MAP.items():
-        out[key] = _first(row, cands)
+        # due 用 epoch 量级校验版：\N/0/相对分钟脏值不得短路回退链
+        out[key] = _first_due(row, cands) if key == "due_epoch_ms" else _first(row, cands)
     out["ready_min"] = _epoch_min(out.get("ready_epoch_ms"))
     out["due_min"] = _epoch_min(out.get("due_epoch_ms"))
     out["finish_min"] = _epoch_min(out.get("finish_epoch_ms"))
@@ -342,13 +367,20 @@ def load_real_episode_config(order_path: str | Path,
                              rider_path: Optional[str | Path] = None,
                              max_orders: int = 60,
                              max_riders: int = 5,
-                             completed_only: bool = True) -> Dict[str, Any]:
+                             completed_only: bool = True,
+                             city: Optional[str] = None) -> Dict[str, Any]:
     """一站式：样本文件 → DeliveryEnv(config=...)。
 
     返回键：
       scenario / custom_orders / riders / geo_grid_size / data_source
+    city：按 super_city_name 过滤（2026-10 全国多城数据必须单城采样，
+          否则 GeoProjector 投影被跨城坐标拉爆）。
     """
-    order_rows = load_rows(order_path, max_rows=max(max_orders * 3, 200))
+    order_rows = load_rows(order_path, max_rows=None if city else max(max_orders * 3, 200))
+    if city:
+        order_rows = [r for r in order_rows
+                      if str(_first(r, ("super_city_name", "super_city", "city", "city_name")) or "") == city]
+        order_rows = order_rows[:max(max_orders * 3, 200)]
     cores = [extract_order_core(r) for r in order_rows]
     cores = filter_training_orders(cores, completed_only=completed_only)
 
@@ -364,7 +396,11 @@ def load_real_episode_config(order_path: str | Path,
 
     riders = None
     if rider_path:
-        rider_rows = load_rider_sample_rows(rider_path, max_rows=max_riders * 8)
+        rider_rows = load_rider_sample_rows(rider_path, max_rows=None if city else max_riders * 8)
+        if city:
+            rider_rows = [r for r in rider_rows
+                          if str(_first(r, ("super_city_name", "super_city", "city", "city_name")) or "") == city]
+            rider_rows = rider_rows[:max_riders * 8]
         riders = build_rider_configs(rider_rows, projector, max_riders=max_riders)
 
     cfg: Dict[str, Any] = {
@@ -469,7 +505,8 @@ def sample_order_window(pool: List[Dict[str, Any]],
 def load_real_training_pool(order_path: str | Path,
                             rider_path: Optional[str | Path] = None,
                             max_orders: int = 2000,
-                            max_riders: int = 5) -> Dict[str, Any]:
+                            max_riders: int = 5,
+                            city: Optional[str] = None) -> Dict[str, Any]:
     """一次性加载真实订单池 + 骑手/地理，供 SimplePPOTrainer 使用。
 
     返回键与 load_real_episode_config 相同，另加：
@@ -478,7 +515,7 @@ def load_real_training_pool(order_path: str | Path,
     cfg = load_real_episode_config(
         order_path, rider_path=rider_path,
         max_orders=max_orders, max_riders=max_riders,
-        completed_only=True,
+        completed_only=True, city=city,
     )
     cfg["order_pool"] = list(cfg.get("custom_orders") or [])
     return cfg

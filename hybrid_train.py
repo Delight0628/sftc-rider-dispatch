@@ -54,6 +54,8 @@ def main():
     parser.add_argument("--episode-order-size", type=int, default=40,
                         help="每 episode 从真实订单池采样的订单数")
     parser.add_argument("--real-max-pool", type=int, default=2000)
+    parser.add_argument("--real-city", type=str, default="",
+                        help="按 super_city_name 过滤单城样本（全国多城数据必填，如 上海市）")
     # Hybrid 新增参数
     parser.add_argument("--episodes", type=int, default=200,
                         help="训练迭代轮数（max_iters，每轮采集+更新）")
@@ -100,6 +102,7 @@ def main():
             rider_path=cli_args.real_riders or None,
             max_orders=int(cli_args.real_max_pool),
             max_riders=5,
+            city=cli_args.real_city or None,
         )
         env_config["real_order_pool"] = pool_cfg.get("order_pool") or []
         env_config["episode_order_size"] = int(cli_args.episode_order_size)
