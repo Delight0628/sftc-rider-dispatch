@@ -150,6 +150,24 @@
 实施路线：三个 git 分支各实现一项 → 逐一上服务器完整训练（400 iters）实时盯盘 → 三方向交叉对比 → **融合最佳组合再训练一轮** → 全部产物归档本地。
 详细记录：`docs/draft_hybrid_tuning_1011.md`。
 
+### 5.2 三分支范式实验与融合（2026-10-11，guoluo_hybrid_1014{a,b,c}）
+
+协议同 5.1（400 iters × 12 ep、6 workers、seed 0、固定 eval seed），1013 配置基座，唯一变量 = 各分支范式改动。分支代码：`exp-a-shaping` / `exp-b-features` / `exp-c-lambda`（校验 39/37/36 全绿）。
+
+| 分支 | 改动 | best | 均值 | ≥linear | 0.673触及 | 判定 |
+|------|------|------|------|---------|-----------|------|
+| exp-a | realized_utility 取餐/送达分段 shaping（w_pick=0.3） | 0.6726@60 | 0.653 | 2/40 | 1 | 目标侧无增益 |
+| exp-b | 边特征 12→16 维（拥堵ETA/送达簇/取餐竞争/骑手疲劳） | **0.6726@30** | 0.660 | **21/40** | **18** | **最强方向** |
+| exp-c | n-step→TD(λ) 截断混合 bootstrap（λ=0.8） | 0.6726@150 | — | — | 1 | ~209 中断* |
+
+*exp-c 训练至 iter 233 时实例到租用时长被回收，断点产物已归档本地 `runs/guoluo_hybrid_1014c/`。
+
+**上限归因闭环**：0.6726 在 1010/1013/exp-a/exp-b/exp-c/exp-fusion 六个 run 中被精确复现——优化侧（容量/噪声）、目标侧（shaping/λ-return）、特征侧（16 维）及组合均不破。上限由**学习目标口径（realized_utility）与任务可辨识度**决定。
+**增益方向**：特征工程显著提升高位带占领频率（≥linear 13/40→21/40、0.673 触及 10→18 次、触顶 @30）。
+
+**融合终局（1015f，exp-fusion = exp-b × exp-a，400/400 完赛）**：best 0.6726（第六次复现）、均值 0.639、≥linear 11/40、0.673 触及 10 次——**未超越 exp-b 单独**，shaping 叠加 16 维特征反而稀释特征增益（目标侧/输入侧互相干扰）。
+**最终最佳方案 = exp-b 单独（16 维边特征 + 原 realized_utility 口径）**，分支 `exp-b-features`，权重 `runs/guoluo_hybrid_1014b/checkpoints/edge_net_best.npz`。全部产物（1014a/1014b/1014c/1015f）已归档本地。
+
 ---
 
 ## 6. 评价口径（看训练是否有效）
@@ -293,6 +311,8 @@ runs/                             # 远端训练产物（代码同路径）
 
 | 日期 | 变更 |
 |------|------|
+| 2026-10-13 | **接入王新春新数据 rl_hybrid_dispatch_data_20261008.csv（30000 单×72 列、全国 20+ 城、真实 expect_time 口径）并完成上海口径训练 shanghai_hybrid_1016**：特征核查满足要求；修复 `\\N` 空值短路 due 链（`_first_due` epoch 量级校验）、csv.Sniffer 失败（.csv 直读）、跨城坐标拉爆投影（`--real-city` 单城过滤）3 坑；exp-b 16 维方案 400/400 完赛，best **0.8259@40**、0.826 平台 10 次、均值 0.810、**≥linear 11/40**（linear 0.820/edd 0.595），形态与果洛一致→**方案泛化成立但上限形态不变**；产物归档 `runs/shanghai_hybrid_1016/`，仪表盘并入 10 runs；详见 `docs/draft_hybrid_tuning_1011.md` §8 |
+| 2026-10-11 | **三分支范式实验并入 §5.2**：exp-a shaping 无增益 / exp-b 16 维特征最强（21/40、18 次触顶）/ exp-c λ-return 中断于 iter 233（断点产物已归档）；0.6726 六 run 复现 → 上限归因闭环；融合 exp-fusion（1015f，b×a）完赛未超越 exp-b 单独（0.639/11/40）→ **最终最佳 = exp-b 16 维特征**；全部产物归档本地 |
 | 2026-10-10 | **四轮训练迭代（1010-1013）全过程并入 §5.1**：机制修正→放宽失败→收紧+降噪→容量+目标；best 钉死 0.6726，判定优化侧到顶，上限在学习目标/特征（realized_utility 口径、12 维边特征）；下阶段三分支范式实验（shaping / 边特征 / λ-return）→交叉对比→融合复训；详见 `docs/draft_hybrid_tuning_1011.md` |
 | 2026-10-08 | **MAPPO/CTDE 完全替换为 Hybrid 派单框架**（边效用网络+off-policy TD+约束匹配+滚动重优化）；mappo/ 与 auto_train.py 归档至 archive/；训练入口改 `hybrid_train.py`；观测主干改 set 观测（N 可变）；依据 `docs/research_dispatch_algorithm_survey.md` |
 | 2026-10-08 | **Hybrid 训练链路完成并全量校验通过**：hybrid/{edge_value_net,scorers,replay_buffer,collect,evaluate,trainer}.py + hybrid_train.py；checks 30/30、27/27、22/22、14/14；mock 冒烟 neural 0.9097≥linear 0.9095≫启发式 0.666；修复 warm-start ±x 双通道/目标网络硬拷贝/npz 键名/order_id int64 四个关键 bug |
