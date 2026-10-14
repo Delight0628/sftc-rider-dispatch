@@ -113,6 +113,16 @@ def main():
                                   hidden=128, num_heads=4)
     ck.check("collect_episode 走池窗口不崩", True)
 
+    print("\n[2c] 评估路径同样消费池（回归：评估采合成=训练/评估错配）")
+    from hybrid.evaluate import evaluate_episode  # noqa: E402
+    st_b = evaluate_episode(dict(ep_cfg), "linear", None, seed=5,
+                            hidden=128, num_heads=4, max_steps=30)
+    ck.check("evaluate_episode 走池窗口不崩", "episode_score" in st_b)
+    # 基线分应偏离合成订单口径（合成订单下 linear score≈0.95，真实窗口下显著不同）
+    ck.check("评估订单流非合成（score 口径变化）",
+             abs(float(st_b.get("episode_score", 0.0)) - 0.954) > 0.05,
+             f"score={st_b.get('episode_score')}")
+
     print("\n[3] env + mock 上游（模拟 trainer 回合配置）")
     riders = pool_cfg["riders"]
     geo = pool_cfg["geo_config"]

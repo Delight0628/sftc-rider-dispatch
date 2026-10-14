@@ -17,7 +17,7 @@ import numpy as np
 from environments.delivery_config import calculate_delivery_episode_score
 from environments.delivery_env import DeliveryEnv
 from environments.hybrid_dispatch import HybridDispatcher
-from hybrid.collect import _make_batch_scorer
+from hybrid.collect import _make_batch_scorer, resolve_env_config
 from hybrid.scorers import LinearEdgeScorer
 
 
@@ -84,7 +84,7 @@ def evaluate_episode(env_config: Dict[str, Any], scorer_kind: str,
     scorer_kind: linear | neural(npz 路径) | 启发式基线名
     （nearest / edd / fifo / random / idle，逐骑手独立选择）。
     """
-    env = DeliveryEnv(env_config)
+    env = DeliveryEnv(resolve_env_config(env_config, seed=seed))
     env.reset(seed=seed)
 
     heuristics = ("nearest", "edd", "fifo", "random", "idle")
@@ -129,10 +129,11 @@ def evaluate_all(env_config: Dict[str, Any],
     linear（include_linear）、baselines。所有 episode 用相同 seed 序列（seed+ep），
     保证同一订单流上对拍（铁律前提）。
 
-    window_pool：真实订单池（real_order_pool）。给了池时每个 ep 用
-    sample_order_window(池, window_size, seed=seed+ep) 采样真实窗口注入
-    custom_orders（同 ep 所有 scorer 同窗口 → 对拍铁律保持）；不给池时
-    走原 env_config 订单来源（mock/合成），行为与旧版完全一致。
+    订单来源由 evaluate_episode 内的 resolve_env_config 解析：
+    custom_orders 优先，其次 real_order_pool 窗口采样（ep 级窗口按
+    seed=seed+ep → 同 ep 所有 scorer 同窗口，对拍铁律保持），最后合成订单。
+    window_pool/window_size 兼容旧调用方（显式窗口池）；不传时自动从
+    env_config['real_order_pool'] 取，行为与 collect_episode 完全一致。
     """
     scorers: List[Tuple[str, str, Optional[str]]] = []
     if neural_artifact is not None:
@@ -142,15 +143,15 @@ def evaluate_all(env_config: Dict[str, Any],
     for b in baselines:
         scorers.append((b, b, None))
 
-    win_size = int(window_size or env_config.get("episode_order_size") or 40)
-
     def _ep_cfg(ep: int) -> Dict[str, Any]:
         if not window_pool:
             return env_config
         from environments.real_data_loader import sample_order_window
         cfg = dict(env_config)
-        cfg["custom_orders"] = sample_order_window(window_pool, win_size,
-                                                   seed=seed + ep)
+        cfg["custom_orders"] = sample_order_window(
+            window_pool,
+            int(window_size or env_config.get("episode_order_size") or 40),
+            seed=seed + ep)
         return cfg
 
     out: Dict[str, Dict[str, float]] = {}
