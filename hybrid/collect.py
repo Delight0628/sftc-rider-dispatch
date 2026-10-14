@@ -34,6 +34,27 @@ def _make_batch_scorer(kind: str, artifact: Optional[str],
     return _NpBatchScorer(artifact)
 
 
+def resolve_env_config(env_config: Dict[str, Any], seed: int = 0) -> Dict[str, Any]:
+    """把 real_order_pool 解析成 custom_orders 窗口（真实数据消费接线）。
+
+    DeliveryEnv 只认 custom_orders；不给就走合成随机订单。此前 hybrid 链路把
+    real_order_pool 透传给 env_config 却无任何消费者 → 真实订单池被静默忽略，
+    episode 退回合成订单（bug）。本函数补上消费：给了池且无 custom_orders 时，
+    用 sample_order_window(池, episode_order_size, seed) 采样真实窗口注入。
+    无池或已给 custom_orders 时原样返回（mock/合成场景行为不变）。
+    """
+    if env_config.get("custom_orders") is not None:
+        return env_config
+    pool = env_config.get("real_order_pool")
+    if not pool:
+        return env_config
+    from environments.real_data_loader import sample_order_window
+    cfg = dict(env_config)
+    cfg["custom_orders"] = sample_order_window(
+        pool, int(env_config.get("episode_order_size") or 40), seed=seed)
+    return cfg
+
+
 def collect_episode(env_config: Dict[str, Any],
                     scorer_kind: str = "linear",
                     scorer_artifact: Optional[str] = None,
@@ -50,8 +71,11 @@ def collect_episode(env_config: Dict[str, Any],
     transitions 结构见 replay_buffer.py 模块注释。行为策略：
     - temp=0：贪心（全部合法边参与匹配）；
     - temp>0：每骑手每轮按 softmax(q/temp) 采样一条候选边后贪心匹配。
+
+    订单来源经 resolve_env_config 解析：custom_orders 优先，其次
+    real_order_pool 窗口采样，最后合成订单（mock）。
     """
-    env = DeliveryEnv(env_config)
+    env = DeliveryEnv(resolve_env_config(env_config, seed=seed))
     env.reset(seed=seed)
     batch_scorer = _make_batch_scorer(scorer_kind, scorer_artifact, hidden, num_heads)
     dispatcher = HybridDispatcher(env, batch_scorer=batch_scorer)

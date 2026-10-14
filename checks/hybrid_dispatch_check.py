@@ -89,7 +89,10 @@ def check_edge_scorer(ck: Checker):
     start = max(sim.current_time, free_t if free_t > 0 else sim.current_time)
     f1 = scorer.build_features(sim, rider, order, pos, start, sim.current_time)
     f2 = scorer.build_features(sim, rider, order, pos, start, sim.current_time)
-    ck.check("特征维度 12 且确定", f1.shape == (12,) and np.allclose(f1, f2))
+    feat_dim = len(scorer.weights)  # exp-b 起 12→16 维，与 edge_weights 对齐
+    ck.check(f"特征维度 = 权重维度({feat_dim})且确定",
+             f1.shape == (feat_dim,) and np.allclose(f1, f2),
+             f"shape={f1.shape}")
     ck.check("on_time_feasible 是 0/1 量", f1[2] in (0.0, 1.0))
     s = scorer.score(f1)
     ck.check("打分 = w·f", abs(s - float(scorer.weights @ f1)) < 1e-9, f"score={s:.3f}")

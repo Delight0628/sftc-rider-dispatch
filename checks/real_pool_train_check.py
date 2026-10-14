@@ -77,6 +77,42 @@ def main():
     full = sample_order_window(pool, 10 ** 6, seed=0)
     ck.check("size>池 → 整池", len(full) == len(pool), f"{len(full)} vs {len(pool)}")
 
+    print("\n[2b] real_order_pool 消费接线（回归：此前该池被静默忽略→合成订单）")
+    from hybrid.collect import collect_episode, resolve_env_config  # noqa: E402
+    pool_ids = {o["order_id"] for o in pool}
+    ep_cfg = {
+        "scenario": "delivery",
+        "training_mode": True,
+        "real_order_pool": pool,
+        "episode_order_size": 60,
+        "riders": pool_cfg["riders"],
+        "geo_config": pool_cfg["geo_config"],
+        "MAX_SIM_STEPS": 40,
+    }
+    resolved = resolve_env_config(dict(ep_cfg), seed=0)
+    cos = resolved.get("custom_orders") or []
+    ck.check("resolve 注入 custom_orders 窗口", len(cos) == 60, str(len(cos)))
+    ck.check("窗口订单全部来自真实池",
+             bool(cos) and {o["order_id"] for o in cos} <= pool_ids,
+             f"命中={len({o['order_id'] for o in cos} & pool_ids)}/{len(cos)}")
+    ck.check("resolve 保留原池引用", resolved.get("real_order_pool") is pool)
+    # 已给 custom_orders 时不覆盖（幂等）
+    fixed = {"custom_orders": [{"order_id": 999, "ready_time": 0.0, "due_date": 10.0}]}
+    ck.check("已有 custom_orders 不覆盖",
+             resolve_env_config({**ep_cfg, **fixed}, seed=0).get("custom_orders") is fixed["custom_orders"])
+    # 无池不注入（mock 合成场景行为不变）
+    mock_cfg = {"scenario": "delivery"}
+    ck.check("无池不注入", resolve_env_config(mock_cfg, seed=0) is mock_cfg)
+    env_b = DeliveryEnv(resolved)
+    env_b.reset(seed=0)
+    got_ids = {o.order_id for o in env_b.sim.orders}
+    ck.check("env rollout 订单=真实窗口", got_ids and got_ids <= pool_ids,
+             f"{len(got_ids)} 单, 真实命中={len(got_ids & pool_ids)}")
+    _trans, _st = collect_episode(dict(ep_cfg), scorer_kind="linear", temp=0.0,
+                                  seed=1, n_step=8, gamma=0.99,
+                                  hidden=128, num_heads=4)
+    ck.check("collect_episode 走池窗口不崩", True)
+
     print("\n[3] env + mock 上游（模拟 trainer 回合配置）")
     riders = pool_cfg["riders"]
     geo = pool_cfg["geo_config"]
