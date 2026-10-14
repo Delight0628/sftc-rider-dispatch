@@ -62,6 +62,11 @@
 !data/schema/dwd_fact_order_whole_字段中文对照.txt
 !data/schema/dim_rider_single_字段中文对照.txt
 
+# RL 训练/验证数据集（王新春交付，纳入版本控制）
+!rl_hybrid_dispatch_data_20261008.csv
+!rl_train20_20261008.csv
+!RL数据交付说明_20261013.txt
+
 # 果洛业务样本（订单/骑手，供训练与评估托管）
 !data/real_incoming/
 !data/real_incoming/orders_guoluo_20260915_full.csv
@@ -76,6 +81,7 @@
 
 # Documentation
 !README.md
+!2026数据算法挑战赛 — 《考虑骑士接单意愿的动态派单调度系统》.md
 !docs/
 !docs/design_variable_riders_orders.md
 !AGENTS.md

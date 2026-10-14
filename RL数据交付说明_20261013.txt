@@ -1,0 +1,105 @@
+RL派单模型数据交付说明（2026-10-13）
+====================================================================
+数据文件: rl_hybrid_dispatch_data_20261008.csv (30000单 × 72列, UTF-8-BOM)
+
+一、数据口径（与双塔&Deep&Wide完全同源）
+--------------------------------------------------------------------
+来源表: dts.dwd_fact_order_whole
+口径: edt='20261008' AND emn='202610' AND da_order_status=1
+      AND rider_ucode_accept IS NOT NULL AND rider_ucode_accept != ''
+取数方式: 按双塔&D&W模型训练数据(pairs3_raw)的30000个order_id
+          精确IN圈定, 对拍重合率100%(30000/30000)
+=> 两边模型用的是完全同一批订单, 仅为对方RL模型增补了特征列,
+   我方模型特征列全部保留, 可直接对齐做对比与融合。
+
+二、RL模型41维特征 ↔ 源字段映射
+--------------------------------------------------------------------
+【rider_feat 骑手特征 8维】
+  载荷率(load_ratio)      <- total_distance / capacity(需运行时计算,
+                            原始量: total_distance, stra_riding_distance)
+  忙碌比(busy_ratio)       <- 运行时窗口统计(原始量: 时间链各时间戳)
+  离线状态(offline)        <- work_status(骑士9列)
+  速度(speed)              <- total_distance / distribution_duration
+  容量(capacity)           <- vehicle_type(车型映射容量) + weight_gram
+  free_delay               <- arrive_shop_duration / wait_duration
+  pos_x / pos_y            <- arriveshop_lng / arriveshop_lat
+  (骑手画像: ucode, level, work_type, vehicle_type, rider_sex,
+   work_status, extra_flag, team_id, station_id 已全量附上)
+
+【cand_feat 候选单特征 12维】
+  dispatch_bias            <- dispatch_type / group_type
+  due_rel(相对截止)        <- latest_delivery_time - order_time
+  取餐耗时                 <- pickup_duration / arrive_shop_duration
+  全程耗时                 <- distribution_duration
+  拥堵系数                 <- nav_estimated_duration / distance_km
+  优先级(priority)         <- priority_order_type
+  is_urgent                <- order_kind / priority_order_type
+  type_id                  <- business_type_name / product
+  迟到风险(latency_risk)   <- promise_delivery_time vs finish_time分布
+  slack                    <- latest_delivery_time - estimated_delivery_time
+  rank                     <- (按候选打分运行时排序)
+
+【global_feat 全局特征 5维】
+  <- weather_level, aoi_press, dim_area, super_city_name,
+     is_night_send(夜间单比例)
+
+【edge_feat 边特征 16维】核心打分通道
+  12维基线: 距离/ETA/方向角等 <- distance_km, total_distance,
+     shop/user/arriveshop/pickup/finish 的 lng/lat(8个GPS坐标),
+     estimated_delivery_time, nav_estimated_duration
+  4维exp-b:
+    eta_congestion         <- nav_estimated_duration vs 实际distribution_duration
+    dropoff_cluster        <- user_real_aoi_id / grid_id(落单聚类)
+    pickup_contention      <- shop_real_aoi_id(取餐竞争度)
+    rider_fatigue          <- wait_duration / dish_time(骑手疲劳度)
+
+三、列分组速查(72列)
+--------------------------------------------------------------------
+键(2):        order_id, rider_ucode_accept
+订单基础(22): dim_area, lc_id, business_station_id, normal_aoi_id,
+              order_received_time, super_city_name, business_type_name,
+              product, delivery_type, dispatch_type, group_type,
+              weather_level, shop_lng, shop_lat, user_lng, user_lat,
+              distance_km, weight_gram, basic_fee, total_price,
+              user_price, order_time
+时效承诺(7):  expect_time, promise_delivery_time, latest_delivery_time,
+              estimated_delivery_time, expect_pickup_time,
+              nav_estimated_duration, estimated_meal_preparation_time
+时间链(9):    push_time, first_dispatch_time, order_disp_time, fetch_time,
+              pickup_time, arriveshop_time, finish_time,
+              virtual_accept_time, order_received_time
+真实耗时(6):  arrive_shop_duration, pickup_duration, delivery_duration,
+              distribution_duration, wait_duration, dish_time
+里程GPS(8):   total_distance, stra_riding_distance, arriveshop_lng/lat,
+              pickup_lng/lat, finish_lng/lat
+优先级场景(10): priority_order_type, order_kind, is_night_send,
+              is_grab_order, first_accept_type, is_timeliness, aoi_press,
+              grid_id, shop_real_aoi_id, user_real_aoi_id
+骑士9列:      ucode, station_id, level, work_type, vehicle_type,
+              rider_sex, work_status, extra_flag, team_id
+(骑手特征覆盖率99.81%, 57单在双塔源数据中无骑手画像)
+
+四、数据质量核查结论(交付前已全量对拍)
+--------------------------------------------------------------------
+1. order_id 与双塔&D&W训练数据(pairs3) 30000/30000 全等,
+   rider_ucode_accept 一致率 100%, order_received_time/distance_km
+   一致率 100% —— 确认同一批订单同一批接单骑手。
+2. 坐标列(shop/user/arriveshop等)按4位小数存储, 与双塔源数据
+   全量数值等价(差<1e-4度, 100%)。
+3. finish_lng/finish_lat 约48%为0(源表未记录完成坐标), 做
+   落单/终点分析时请过滤=0的行; 其余坐标均在境内范围。
+4. 下单->完成时长中位数0.55小时, 负值占比0.02%(跨零点尾单),
+   时间戳字段单位为秒(epoch)。
+5. distance_km 中位数0是源表特征(近距离/同点单较多), 与双塔
+   源数据完全一致, 非取数错误。
+
+五、使用提示
+--------------------------------------------------------------------
+1. 时长类字段单位为秒, total_distance/stra_riding_distance为米,
+   distance_km为公里, weight_gram为克。
+2. 仿真运行时状态量(载荷率/忙碌比/候选rank等)需在环境里按
+   时间戳回放计算, 本表提供的是全部原始观测量。
+3. 骑士9列来自双塔&D&W同款维表(按rider_ucode_accept关联),
+   保证两边模型骑手画像完全一致。
+
+——AI智能体代王新春(via 机器人)(tc023841)办理
