@@ -311,6 +311,7 @@ runs/                             # 远端训练产物（代码同路径）
 
 | 日期 | 变更 |
 |------|------|
+| 2026-10-14 | **修复 real_order_pool 无消费者 bug 并重训 shanghai_hybrid_1017**：hybrid 链路把真实订单池透传 env_config 却无消费者（DeliveryEnv 只认 custom_orders），episode 退回合成订单；新增 `resolve_env_config`（池→sample_order_window 窗口注入），collect/evaluate 双侧接线，回归 31/31。诊断坐实：1016 的 eval 基线 L=0.820/edd=0.595 为合成口径，修复后 L=0.531/edd=0.496（真实订单流）。1017 同协议 400/400 完赛（11282s）：**best 0.5616@370**、均值 0.541、**≥linear 37/40**（L 均值 0.531）；产物 `runs/shanghai_hybrid_1017/` 归档，仪表盘并入 11 runs。**1016 及之前 run 的分数为合成订单口径，横向对比须以 1017 起为准** |
 | 2026-10-13 | **接入王新春新数据 rl_hybrid_dispatch_data_20261008.csv（30000 单×72 列、全国 20+ 城、真实 expect_time 口径）并完成上海口径训练 shanghai_hybrid_1016**：特征核查满足要求；修复 `\\N` 空值短路 due 链（`_first_due` epoch 量级校验）、csv.Sniffer 失败（.csv 直读）、跨城坐标拉爆投影（`--real-city` 单城过滤）3 坑；exp-b 16 维方案 400/400 完赛，best **0.8259@40**、0.826 平台 10 次、均值 0.810、**≥linear 11/40**（linear 0.820/edd 0.595），形态与果洛一致→**方案泛化成立但上限形态不变**；产物归档 `runs/shanghai_hybrid_1016/`，仪表盘并入 10 runs；详见 `docs/draft_hybrid_tuning_1011.md` §8 |
 | 2026-10-11 | **三分支范式实验并入 §5.2**：exp-a shaping 无增益 / exp-b 16 维特征最强（21/40、18 次触顶）/ exp-c λ-return 中断于 iter 233（断点产物已归档）；0.6726 六 run 复现 → 上限归因闭环；融合 exp-fusion（1015f，b×a）完赛未超越 exp-b 单独（0.639/11/40）→ **最终最佳 = exp-b 16 维特征**；全部产物归档本地 |
 | 2026-10-10 | **四轮训练迭代（1010-1013）全过程并入 §5.1**：机制修正→放宽失败→收紧+降噪→容量+目标；best 钉死 0.6726，判定优化侧到顶，上限在学习目标/特征（realized_utility 口径、12 维边特征）；下阶段三分支范式实验（shaping / 边特征 / λ-return）→交叉对比→融合复训；详见 `docs/draft_hybrid_tuning_1011.md` |
