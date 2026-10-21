@@ -102,3 +102,11 @@
 !supervisor/start_train_remote.sh
 !supervisor/log_parser.py
 !supervisor/backup_sync.py
+
+# Live 调度大屏（§7.5 最终展示形态）
+!supervisor/live_dashboard/
+!supervisor/live_dashboard/__init__.py
+!supervisor/live_dashboard/sim_stream.py
+!supervisor/live_dashboard/server.py
+!supervisor/live_dashboard/static/
+!supervisor/live_dashboard/static/index.html

@@ -1,0 +1,605 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LIVE 调度指挥台 · 骑手动态派单</title>
+<style>
+:root{
+  --bg:#070b14; --bg2:#0a1120; --panel:#0c1526; --panel2:#101c31;
+  --line:#1b2c48; --line2:#27406a;
+  --cyan:#3ce4ff; --cyan-dim:#1a7f96; --amber:#ffb051; --amber-dim:#a06a28;
+  --green:#4ade80; --red:#ff5470; --violet:#9d7bff;
+  --text:#d9e6f7; --muted:#6e86a8; --faint:#3c5170;
+  --disp:"Bahnschrift","Arial Narrow","Segoe UI Semibold",sans-serif;
+  --body:"Segoe UI","Microsoft YaHei",sans-serif;
+  --mono:"Cascadia Mono",Consolas,"Courier New",monospace;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{height:100%}
+body{
+  background:
+    radial-gradient(1200px 500px at 70% -10%, rgba(60,228,255,.08), transparent 60%),
+    radial-gradient(900px 420px at 10% 110%, rgba(255,176,81,.06), transparent 55%),
+    var(--bg);
+  color:var(--text); font-family:var(--body); overflow:hidden;
+}
+/* 网格坐标肌理 */
+body::before{
+  content:""; position:fixed; inset:0; pointer-events:none; z-index:0;
+  background-image:
+    linear-gradient(rgba(60,228,255,.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(60,228,255,.035) 1px, transparent 1px);
+  background-size:48px 48px;
+  mask-image:radial-gradient(1400px 900px at 50% 40%, #000 30%, transparent 90%);
+}
+/* 扫描线肌理 */
+.scan{position:fixed;inset:0;pointer-events:none;z-index:99;opacity:.5;
+  background:repeating-linear-gradient(0deg, transparent 0 3px, rgba(0,0,0,.14) 3px 4px);}
+
+/* ===== 顶栏 ===== */
+.topbar{
+  position:relative; z-index:5; height:64px; display:flex; align-items:center;
+  gap:22px; padding:0 22px;
+  border-bottom:1px solid var(--line);
+  background:linear-gradient(180deg, rgba(16,28,49,.9), rgba(10,17,32,.75));
+}
+.brand{display:flex;align-items:baseline;gap:12px}
+.brand h1{
+  font-family:var(--disp); font-size:26px; letter-spacing:2px; font-weight:700;
+  background:linear-gradient(92deg,var(--cyan),#8ef1ff 45%,var(--amber));
+  -webkit-background-clip:text; background-clip:text; color:transparent;
+}
+.brand .sub{font-family:var(--mono);font-size:11px;color:var(--muted);letter-spacing:1px}
+.pill{
+  display:inline-flex;align-items:center;gap:7px;padding:5px 13px;border-radius:20px;
+  font-family:var(--mono);font-size:11px;letter-spacing:.5px;
+  border:1px solid var(--line2); color:var(--muted); background:rgba(12,21,38,.6);
+}
+.pill b{color:var(--text);font-weight:600}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 8px var(--green)}
+.dot.warn{background:var(--amber);box-shadow:0 0 8px var(--amber)}
+.spacer{flex:1}
+.simtime{font-family:var(--disp);font-size:30px;letter-spacing:1px;color:var(--cyan);
+  text-shadow:0 0 18px rgba(60,228,255,.45)}
+.simtime span{font-size:13px;color:var(--muted);letter-spacing:2px;margin-left:6px}
+
+/* ===== 布局 ===== */
+.grid{
+  position:relative; z-index:4; display:grid;
+  grid-template-columns:290px 1fr 340px; gap:14px;
+  height:calc(100vh - 64px - 172px); padding:14px 16px 6px;
+}
+.panel{
+  background:linear-gradient(165deg, rgba(16,28,49,.86), rgba(12,21,38,.92));
+  border:1px solid var(--line); border-radius:12px; padding:14px 16px;
+  display:flex; flex-direction:column; min-height:0; position:relative; overflow:hidden;
+}
+.panel::before{content:"";position:absolute;top:0;left:0;right:0;height:2px;
+  background:linear-gradient(90deg,transparent,var(--cyan-dim),transparent);opacity:.7}
+.panel h2{
+  font-family:var(--disp); font-size:12px; letter-spacing:3px; color:var(--muted);
+  margin-bottom:12px; display:flex; align-items:center; gap:9px;
+}
+.panel h2::before{content:"";width:4px;height:13px;background:var(--cyan);border-radius:2px;
+  box-shadow:0 0 8px var(--cyan)}
+.panel h2.amber::before{background:var(--amber);box-shadow:0 0 8px var(--amber)}
+
+/* KPI */
+.kpis{display:grid;grid-template-columns:1fr 1fr;gap:9px}
+.kpi{background:rgba(27,44,72,.32);border:1px solid var(--line);border-radius:9px;padding:9px 11px}
+.kpi .lbl{font-size:10px;letter-spacing:1.5px;color:var(--muted)}
+.kpi .val{font-family:var(--disp);font-size:27px;line-height:1.12;margin-top:2px;
+  transition:color .3s;text-shadow:0 0 14px rgba(60,228,255,.22)}
+.kpi .val.cyan{color:var(--cyan)} .kpi .val.green{color:var(--green)}
+.kpi .val.amber{color:var(--amber)} .kpi .val.red{color:var(--red)}
+.kpi .sub{font-family:var(--mono);font-size:9.5px;color:var(--faint);margin-top:1px}
+.kpi.flash{animation:flash .5s ease}
+@keyframes flash{0%{border-color:var(--cyan);background:rgba(60,228,255,.12)}100%{}}
+
+/* 融合面板 */
+.fusebar{height:12px;border-radius:7px;overflow:hidden;display:flex;margin:8px 0 6px;
+  border:1px solid var(--line2)}
+.fusebar i{display:block;height:100%;transition:width .25s}
+.fusebar .u{background:linear-gradient(90deg,var(--cyan-dim),var(--cyan))}
+.fusebar .p{background:linear-gradient(90deg,var(--amber),var(--amber-dim))}
+.legend{display:flex;justify-content:space-between;font-family:var(--mono);font-size:10px;color:var(--muted)}
+.legend b{font-size:13px}
+.legend .u b{color:var(--cyan)} .legend .p b{color:var(--amber)}
+.slider{width:100%;margin:12px 0 4px;accent-color:var(--amber)}
+.srcstats{margin-top:10px;font-family:var(--mono);font-size:10.5px;color:var(--muted);line-height:1.9}
+.srcstats b{color:var(--text)}
+.swatch{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:6px}
+
+/* 地图 */
+.mapwrap{position:relative;flex:1;min-height:0}
+.mapwrap svg{width:100%;height:100%;display:block}
+.mapbadge{position:absolute;top:10px;left:12px;font-family:var(--mono);font-size:10px;
+  letter-spacing:1.5px;color:var(--faint)}
+.mapbadge b{color:var(--cyan)}
+.mode-chips{position:absolute;top:10px;right:12px;display:flex;gap:6px}
+.chip{font-family:var(--mono);font-size:10px;letter-spacing:1px;padding:4px 10px;
+  border:1px solid var(--line2);border-radius:14px;color:var(--muted);cursor:pointer;
+  background:rgba(12,21,38,.7);transition:all .18s}
+.chip.on{color:var(--bg);background:var(--cyan);border-color:var(--cyan);font-weight:700}
+
+/* 派单流 */
+.stream{flex:1;overflow-y:auto;min-height:0}
+.stream::-webkit-scrollbar{width:5px}
+.stream::-webkit-scrollbar-thumb{background:var(--line2);border-radius:3px}
+.cand{border:1px solid var(--line);border-radius:8px;padding:7px 9px;margin-bottom:6px;
+  background:rgba(27,44,72,.26);cursor:pointer;transition:all .16s;
+  animation:slideIn .3s ease both}
+@keyframes slideIn{from{opacity:0;transform:translateX(14px)}to{opacity:1;transform:none}}
+.cand:hover{border-color:var(--cyan-dim);background:rgba(60,228,255,.07)}
+.cand.queue{opacity:.62;border-style:dashed}
+.cand.matched{border-color:var(--cyan);box-shadow:0 0 12px rgba(60,228,255,.18)}
+.cand .row1{display:flex;justify-content:space-between;align-items:center}
+.cand .oid{font-family:var(--disp);font-size:16px;letter-spacing:1px}
+.cand .rider{font-family:var(--mono);font-size:10px;color:var(--amber)}
+.cand .rider.u{color:var(--cyan)}
+.cand .fuse{font-family:var(--disp);font-size:19px;color:var(--cyan);min-width:52px;text-align:right}
+.cand .fuse.hi{color:var(--green);text-shadow:0 0 12px rgba(74,222,128,.5)}
+.dualbar{height:7px;display:flex;border-radius:4px;overflow:hidden;margin:5px 0 3px;
+  background:rgba(255,255,255,.05)}
+.dualbar i{height:100%}
+.dualbar .du{background:linear-gradient(90deg,var(--cyan-dim),var(--cyan))}
+.dualbar .dp{background:linear-gradient(90deg,var(--amber),var(--amber-dim))}
+.cand .row3{display:flex;justify-content:space-between;font-family:var(--mono);
+  font-size:9.5px;color:var(--faint);letter-spacing:.4px}
+.cand .row3 em{font-style:normal}
+.cand .row3 .late{color:var(--red)} .cand .row3 .ok{color:var(--green)}
+.tag{display:inline-block;font-family:var(--mono);font-size:8.5px;letter-spacing:1px;
+  padding:1.5px 7px;border-radius:9px;border:1px solid var(--amber-dim);color:var(--amber)}
+.tag.fb{border-color:var(--faint);color:var(--faint)}
+
+/* 事件 ticker */
+.ticker{height:128px;overflow:hidden;margin-top:10px;border-top:1px solid var(--line);padding-top:9px}
+.ticker .t-item{display:flex;gap:9px;align-items:baseline;font-family:var(--mono);
+  font-size:10.5px;padding:2.5px 0;color:var(--muted);animation:tickIn .3s ease both}
+@keyframes tickIn{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:none}}
+.ticker .t-time{color:var(--faint);min-width:52px}
+.ticker .t-item.assign .t-txt{color:var(--cyan)}
+.ticker .t-item.deliver .t-txt{color:var(--green)}
+.ticker .t-item.late .t-txt{color:var(--red)}
+.ticker .t-item.urgent .t-txt{color:var(--amber)}
+
+/* ===== 底部：时间轴 + 甘特 ===== */
+.bottom{
+  position:relative;z-index:4;height:172px;margin:0 16px 10px;
+  background:linear-gradient(165deg, rgba(16,28,49,.86), rgba(12,21,38,.92));
+  border:1px solid var(--line);border-radius:12px;padding:11px 16px;
+  display:flex;flex-direction:column;
+}
+.transport{display:flex;align-items:center;gap:13px;margin-bottom:8px}
+.btn{
+  font-family:var(--disp);font-size:12px;letter-spacing:2px;padding:6px 15px;
+  border:1px solid var(--line2);border-radius:8px;background:rgba(27,44,72,.4);
+  color:var(--text);cursor:pointer;transition:all .16s;
+}
+.btn:hover{border-color:var(--cyan);color:var(--cyan);box-shadow:0 0 12px rgba(60,228,255,.25)}
+.btn.play{background:var(--cyan);color:var(--bg);font-weight:700;border-color:var(--cyan)}
+.scrub{flex:1;-webkit-appearance:none;height:6px;border-radius:4px;
+  background:linear-gradient(90deg,var(--cyan-dim) var(--p,0%), rgba(255,255,255,.1) var(--p,0%));
+  outline:none}
+.scrub::-webkit-slider-thumb{-webkit-appearance:none;width:17px;height:17px;border-radius:50%;
+  background:var(--cyan);border:2.5px solid var(--bg);cursor:grab;
+  box-shadow:0 0 14px rgba(60,228,255,.7)}
+.frameinfo{font-family:var(--mono);font-size:11px;color:var(--muted);letter-spacing:1px}
+.frameinfo b{color:var(--cyan);font-size:14px}
+.gantt{flex:1;position:relative;min-height:0}
+.gantt svg{width:100%;height:100%;display:block}
+.gbar{fill:url(#gbarGrad);rx:3}
+.gbar.late{fill:url(#gbarLate)}
+
+/* 载入动画 */
+.boot{position:fixed;inset:0;z-index:200;background:var(--bg);display:flex;
+  flex-direction:column;align-items:center;justify-content:center;gap:18px;
+  transition:opacity .5s}
+.boot.gone{opacity:0;pointer-events:none}
+.boot .ring{width:64px;height:64px;border-radius:50%;border:3px solid var(--line2);
+  border-top-color:var(--cyan);animation:spin 1s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.boot p{font-family:var(--mono);font-size:12px;letter-spacing:3px;color:var(--muted)}
+@media (max-width:1280px){
+  .grid{grid-template-columns:250px 1fr 300px}
+}
+</style>
+</head>
+<body>
+<div class="boot" id="boot"><div class="ring"></div><p>REPLAY ENGINE LOADING</p></div>
+<div class="scan"></div>
+
+<header class="topbar">
+  <div class="brand">
+    <h1>LIVE 调度指挥台</h1>
+    <div class="sub">RIDER DISPATCH · HYBRID EDGE-UTILITY × DUAL-TOWER FUSION</div>
+  </div>
+  <div class="pill"><span class="dot"></span>数据 <b id="mCsv">—</b></div>
+  <div class="pill">模型 <b id="mModel">—</b></div>
+  <div class="pill">双塔源 <b id="mDual">mock</b></div>
+  <div class="pill">窗口 <b id="mWin">—</b></div>
+  <div class="spacer"></div>
+  <div class="simtime" id="simT">0.0<span>MIN</span></div>
+</header>
+
+<main class="grid">
+  <!-- 左：KPI + 融合 -->
+  <div style="display:flex;flex-direction:column;gap:14px;min-height:0">
+    <div class="panel">
+      <h2>KPI 作战面板</h2>
+      <div class="kpis" id="kpis"></div>
+    </div>
+    <div class="panel" style="flex:1">
+      <h2 class="amber">双模型融合控制台</h2>
+      <div class="legend">
+        <div class="u">紧迫分 · HYBRID<b id="wuVal">50%</b></div>
+        <div class="p" style="text-align:right"><b id="wpVal">50%</b>偏好分 · DUAL-TOWER</div>
+      </div>
+      <div class="fusebar"><i class="u" id="fu" style="width:50%"></i><i class="p" id="fp" style="width:50%"></i></div>
+      <input type="range" class="slider" id="wSlider" min="0" max="100" value="50">
+      <div class="legend"><span>融合公式：fused = w<sub>p</sub>·偏好 + w<sub>u</sub>·紧迫</span></div>
+      <div class="srcstats" id="srcStats"></div>
+    </div>
+  </div>
+
+  <!-- 中：地图 -->
+  <div class="panel">
+    <h2>实时派单态势 · GEO GRID</h2>
+    <div class="mapwrap">
+      <div class="mapbadge">SEED <b id="mSeed">—</b> · GRID KM · 16-D EDGE FEATURES</div>
+      <div class="mode-chips">
+        <div class="chip on" id="chipMatch">派单链路</div>
+        <div class="chip on" id="chipDrop">取送路线</div>
+      </div>
+      <svg id="map" viewBox="0 0 900 620" preserveAspectRatio="xMidYMid meet"></svg>
+    </div>
+  </div>
+
+  <!-- 右：派单流 -->
+  <div class="panel">
+    <h2 class="amber">融合派单流 · TOP CANDIDATES</h2>
+    <div class="stream" id="stream"></div>
+    <div class="ticker" id="ticker"></div>
+  </div>
+</main>
+
+<!-- 底部：回放 + 甘特 -->
+<div class="bottom">
+  <div class="transport">
+    <button class="btn play" id="btnPlay">▶ 播放</button>
+    <button class="btn" id="btnPrev">◂ 上一帧</button>
+    <button class="btn" id="btnNext">下一帧 ▸</button>
+    <button class="btn" id="btnSpeed">1×</button>
+    <div class="spacer"></div>
+    <div class="frameinfo">帧 <b id="fNow">0</b> / <span id="fAll">0</span>
+      &nbsp;·&nbsp; 派单甘特 · RIDER × TIME</div>
+  </div>
+  <div class="gantt"><svg id="gantt" viewBox="0 0 1400 92" preserveAspectRatio="none"></svg></div>
+</div>
+
+<script>
+/* ============================================================
+   数据注入（server 端替换此占位；离线另存后仍可直接打开）
+   ============================================================ */
+var PACK = /*__DATA__*/null;
+
+(function(){
+"use strict";
+if(!PACK){document.getElementById('boot').innerHTML='<p>NO DATA — 请通过 server.py 访问</p>';return;}
+var F=PACK.frames, META=PACK.meta, GANTT=PACK.gantt||[], EV=PACK.events||[];
+var cur=0, playing=false, speed=1, timer=null;
+var wPref=META.w_pref||0.5, wUrg=1-wPref;
+var showMatch=true, showDrop=true;
+
+var $=function(id){return document.getElementById(id);};
+var fmt=function(v,d){return (v==null?'—':Number(v).toFixed(d==null?2:d));};
+
+/* ---------- 顶栏 ---------- */
+$('mCsv').textContent=META.csv; $('mModel').textContent=META.model;
+$('mDual').textContent='mock'; $('mWin').textContent=META.window_size+'单/EP';
+$('mSeed').textContent=META.seed; $('fAll').textContent=F.length;
+
+/* ---------- KPI 面板 ---------- */
+var KPI_DEFS=[
+  ['completion','完成率','cyan',3,function(k){return (k.completion*100).toFixed(1)+'%';},'已送 / 总单'],
+  ['on_time_rate','准时率',   'green',3,function(k){return (k.on_time_rate*100).toFixed(1)+'%';},'on-time / delivered'],
+  ['avg_tardiness','单均迟到','amber',2,function(k){return k.avg_tardiness.toFixed(1)+'m';},'分钟'],
+  ['utilization','骑手利用率','cyan',3,function(k){return (k.utilization*100).toFixed(0)+'%';},'busy / t'],
+  ['delivered','已送达',      'green',0,function(k){return k.delivered+' / '+k.total;},'delivered / total'],
+  ['online_n','在线骑手',     'cyan',0,function(k){return k.online_n+' N';},'OFF 时红']
+];
+function buildKpi(){
+  var h='';
+  for(var i=0;i<KPI_DEFS.length;i++){
+    var d=KPI_DEFS[i];
+    h+='<div class="kpi" id="kpi_'+d[0]+'"><div class="lbl">'+d[1]+'</div>'+
+       '<div class="val '+d[2]+'" id="kv_'+d[0]+'">—</div>'+
+       '<div class="sub">'+d[5]+'</div></div>';
+  }
+  $('kpis').innerHTML=h;
+}
+buildKpi();
+
+/* ---------- 融合控制 ---------- */
+function applyW(){
+  wPref=$('wSlider').value/100; wUrg=1-wPref;
+  $('fu').style.width=(wUrg*100)+'%'; $('fp').style.width=(wPref*100)+'%';
+  $('wuVal').textContent=Math.round(wUrg*100)+'%';
+  $('wpVal').textContent=Math.round(wPref*100)+'%';
+  renderStream(true);
+}
+$('wSlider').addEventListener('input',applyW);
+
+/* ---------- 地图坐标变换 ---------- */
+var bbox=null;
+function calcBBox(){
+  var x0=1e9,y0=1e9,x1=-1e9,y1=-1e9;
+  for(var i=0;i<F.length;i++){var o=F[i].orders;
+    for(var j=0;j<o.length;j++){
+      x0=Math.min(x0,o[j].px,o[j].dx);x1=Math.max(x1,o[j].px,o[j].dx);
+      y0=Math.min(y0,o[j].py,o[j].dy);y1=Math.max(y1,o[j].py,o[j].dy);}}
+  for(var i=0;i<F.length;i++){var r=F[i].riders;
+    for(var j=0;j<r.length;j++){
+      x0=Math.min(x0,r[j].x);x1=Math.max(x1,r[j].x);
+      y0=Math.min(y0,r[j].y);y1=Math.max(y1,r[j].y);}}
+  var pad=0.05;
+  bbox={x0:x0,y0:y0,x1:x1,y1:y1};
+  bbox.s=840/Math.max(x1-x0,1e-6); bbox.ox=30; bbox.oy=26;
+}
+function MX(x){return (x-bbox.x0)*bbox.s+bbox.ox;}
+function MY(y){return 570-(y-bbox.y0)*bbox.s*0.62;}
+
+function renderMap(){
+  var fr=F[cur], h='';
+  /* 网格 */
+  for(var gx=0;gx<=9;gx++){var x=30+gx*92;
+    h+='<line x1="'+x+'" y1="20" x2="'+x+'" y2="590" stroke="rgba(60,228,255,.07)" stroke-width="1"/>';}
+  for(var gy=0;gy<=7;gy++){var y=24+gy*81;
+    h+='<line x1="24" y1="'+y+'" x2="892" y2="'+y+'" stroke="rgba(60,228,255,.07)" stroke-width="1"/>';}
+
+  var i,j,o,ox,oy,dx,dy;
+  /* 订单取送点 */
+  for(i=0;i<fr.orders.length;i++){
+    o=fr.orders[i]; ox=MX(o.px); oy=MY(o.py); dx=MX(o.dx); dy=MY(o.dy);
+    var col = o.state==='delivered'?'#4ade80':o.state==='carried'?'#3ce4ff':
+              o.state==='pool'?'#ffb051':'#3c5170';
+    var op  = o.state==='future'?.28:.85;
+    if(showDrop&&o.state!=='future'){
+      h+='<line x1="'+ox+'" y1="'+oy+'" x2="'+dx+'" y2="'+dy+'" stroke="'+col+
+         '" stroke-width="1" stroke-dasharray="3 4" opacity=".28"/>';
+    }
+    /* 取：方块 */
+    h+='<rect x="'+(ox-3.2)+'" y="'+(oy-3.2)+'" width="6.4" height="6.4" rx="1.4" fill="'+col+
+       '" opacity="'+op+'"/>';
+    /* 送：菱形 */
+    if(o.state!=='future'){
+      h+='<path d="M'+dx+' '+(dy-3.6)+'L'+(dx+3.6)+' '+dy+'L'+dx+' '+(dy+3.6)+'L'+(dx-3.6)+' '+dy+
+         'Z" fill="none" stroke="'+col+'" stroke-width="1.3" opacity="'+(op*.85)+'"/>';
+    }
+  }
+  /* 派单链路（本帧 matched） */
+  if(showMatch&&fr.matched){
+    for(i=0;i<fr.matched.length;i++){
+      var m=fr.matched[i], rider=null;
+      for(j=0;j<fr.riders.length;j++) if(fr.riders[j].name===m.rider){rider=fr.riders[j];break;}
+      if(!rider) continue;
+      var tx=0,ty=0,found=false;
+      for(j=0;j<fr.orders.length;j++) if(fr.orders[j].id===m.oid){tx=MX(fr.orders[j].px);ty=MY(fr.orders[j].py);found=true;break;}
+      if(!found) continue;
+      var x1=MX(rider.x),y1=MY(rider.y);
+      h+='<line x1="'+x1+'" y1="'+y1+'" x2="'+tx+'" y2="'+ty+'" stroke="#3ce4ff" stroke-width="2" '+
+         'opacity=".9" stroke-dasharray="7 6"><animate attributeName="stroke-dashoffset" from="26" to="0" '+
+         'dur="0.9s" repeatCount="indefinite"/></line>';
+      h+='<circle cx="'+tx+'" cy="'+ty+'" r="9" fill="none" stroke="#3ce4ff" stroke-width="1.2" opacity=".65">'+
+         '<animate attributeName="r" values="7;13;7" dur="1.4s" repeatCount="indefinite"/>'+
+         '<animate attributeName="opacity" values=".65;0;.65" dur="1.4s" repeatCount="indefinite"/></circle>';
+    }
+  }
+  /* 骑手 */
+  for(i=0;i<fr.riders.length;i++){
+    var r=fr.riders[i], x=MX(r.x), y=MY(r.y);
+    var rc = r.offline?'#ff5470':r.load>=r.cap?'#ffb051':'#3ce4ff';
+    h+='<circle cx="'+x+'" cy="'+y+'" r="'+(10+r.load*2.2)+'" fill="'+rc+'" opacity=".14">'+
+       '<animate attributeName="r" values="'+(9+r.load*2)+';'+(15+r.load*2)+';'+(9+r.load*2)+
+       '" dur="2.2s" repeatCount="indefinite"/></circle>';
+    h+='<circle cx="'+x+'" cy="'+y+'" r="6.2" fill="'+rc+'" stroke="#070b14" stroke-width="2"/>';
+    h+='<text x="'+x+'" y="'+(y-13)+'" text-anchor="middle" font-family="Bahnschrift,sans-serif" '+
+       'font-size="11.5" fill="#d9e6f7" font-weight="600">'+r.name.replace('骑手','R')+'</text>';
+    h+='<text x="'+x+'" y="'+(y+19)+'" text-anchor="middle" font-family="Consolas,monospace" '+
+       'font-size="8.5" fill="'+rc+'">'+r.load+'/'+r.cap+(r.offline?' OFF':'')+'</text>';
+  }
+  $('map').innerHTML=h;
+}
+
+/* ---------- 派单流 ---------- */
+function renderStream(keepScroll){
+  var fr=F[cur], top=fr.cands.slice(0,18), h='';
+  for(var i=0;i<top.length;i++){
+    var c=top[i];
+    var uw=Math.max(0,wUrg*(c.urg||0)), pw=(c.pref==null?0:wPref*c.pref);
+    var tot=uw+pw||1e-6;
+    var du=uw/tot*100, dp=pw/tot*100;
+    var slClass=c.slack<0?'late':'ok';
+    var isQueue=c.rider==null;
+    var tag=isQueue?'<span class="tag fb">待派池</span>'
+           :c.pref_src==='dual_tower'?'<span class="tag">DUAL-TOWER</span>'
+           :'<span class="tag fb">FALLBACK</span>';
+    var fuseVal=wPref*(c.pref==null?0.5:c.pref)+wUrg*(c.urg||0);
+    h+='<div class="cand'+(c.matched?' matched':'')+(isQueue?' queue':'')+'" data-oid="'+c.oid+'" data-rider="'+(c.rider||'')+'">'+
+       '<div class="row1"><div><div class="oid">订单 '+c.oid+'</div>'+
+       '<div class="rider'+(c.matched?' u':'')+'">'+(isQueue?'未指派 · 池队列':c.rider+' · q='+fmt(c.q,3))+'</div></div>'+
+       '<div class="fuse'+(fuseVal>0.6?' hi':'')+'">'+fmt(fuseVal,3)+'</div></div>'+
+       '<div class="dualbar"><i class="du" style="width:'+du+'%"></i><i class="dp" style="width:'+dp+'%"></i></div>'+
+       '<div class="row3"><span>紧迫 <em>'+fmt(c.urg,2)+'</em></span>'+
+       '<span>偏好 <em>'+fmt(c.pref,2)+'</em> '+tag+'</span>'+
+       '<span class="'+slClass+'">slack '+fmt(c.slack,0)+'m</span>'+
+       (c.matched?'<em class="ok" style="font-weight:700">✓ 派单</em>':'')+'</div></div>';
+  }
+  if(!top.length) h='<div style="color:var(--faint);font-family:var(--mono);padding:20px 0;text-align:center">本帧无候选</div>';
+  $('stream').innerHTML=h;
+  var sc=$('stream').scrollTop;
+  if(keepScroll) $('stream').scrollTop=sc;
+
+  /* 偏好来源统计（全部候选） */
+  var dt=0,fb=0,none=0,all=fr.cands;
+  for(var i=0;i<all.length;i++){
+    if(all[i].pref_src==='dual_tower')dt++;else if(all[i].pref_src==='fallback')fb++;else none++;
+  }
+  $('srcStats').innerHTML=
+    '<div><span class="swatch" style="background:var(--amber)"></span>双塔命中 <b>'+dt+'</b> 条</div>'+
+    '<div><span class="swatch" style="background:var(--faint)"></span>属性兜底 <b>'+fb+'</b> 条</div>'+
+    '<div><span class="swatch" style="background:var(--cyan)"></span>本帧派单 <b>'+(fr.matched||[]).length+'</b> 单</div>'+
+    '<div style="color:var(--faint);margin-top:4px">契约 upstream_candidates: {骑手:[{order_id,willingness}]}</div>';
+}
+
+/* ---------- 事件 ticker ---------- */
+function renderTicker(){
+  var fr=F[cur], t=fr.t, items=[];
+  for(var i=0;i<EV.length;i++){
+    var e=EV[i];
+    if(e.type==='rider_offline'&&e.start<=t&&e.end>=t)
+      items.push(['urgent',e.start,'⚠ '+e.rider+' 离线 ['+e.start+'-'+e.end+']']);
+    if(e.type==='emergency_order'&&e.time<=t)
+      items.push(['urgent',e.time,'⚡ 紧急单 '+e.order_id+' 插入']);
+  }
+  for(var i=0;i<F.length;i++){
+    var f=F[i]; if(f.t>t) break;
+    for(var j=0;j<(f.matched||[]).length;j++){
+      items.push(['assign',f.t,'→ '+f.matched[j].rider+' 接单 #'+f.matched[j].oid+
+        ' · '+(f.matched[j].dist||0).toFixed(1)+'km']);
+    }
+  }
+  items.sort(function(a,b){return b[1]-a[1];});
+  var h='';
+  for(var i=0;i<Math.min(items.length,22);i++){
+    var it=items[i];
+    h+='<div class="t-item '+it[0]+'"><span class="t-time">'+it[1].toFixed(1)+'m</span>'+
+       '<span class="t-txt">'+it[2]+'</span></div>';
+  }
+  if(!h) h='<div class="t-item"><span class="t-time">—</span><span class="t-txt" style="color:var(--faint)">暂无事件</span></div>';
+  $('ticker').innerHTML=h;
+}
+
+/* ---------- 甘特 ---------- */
+function renderGantt(){
+  var tMax=1; for(var i=0;i<GANTT.length;i++) tMax=Math.max(tMax,GANTT[i].end||0);
+  for(i=0;i<F.length;i++) tMax=Math.max(tMax,F[i].t);
+  var riders=F[0].riders, n=riders.length, h='';
+  h+='<defs><linearGradient id="gbarGrad" x1="0" x2="1">'+
+     '<stop offset="0%" stop-color="#1a7f96"/><stop offset="100%" stop-color="#3ce4ff"/></linearGradient>'+
+     '<linearGradient id="gbarLate" x1="0" x2="1">'+
+     '<stop offset="0%" stop-color="#a03a4e"/><stop offset="100%" stop-color="#ff5470"/></linearGradient></defs>';
+  var L=64, R=1384, W=R-L, rowH=Math.min(22, 74/Math.max(n,1));
+  for(i=0;i<n;i++){
+    var y=8+i*rowH;
+    h+='<text x="8" y="'+(y+rowH*0.72)+'" font-family="Bahnschrift,sans-serif" font-size="11" '+
+       'fill="#6e86a8">'+riders[i].name.replace('骑手','R')+'</text>';
+    h+='<line x1="'+L+'" y1="'+(y+rowH*0.92)+'" x2="'+R+'" y2="'+(y+rowH*0.92)+
+       '" stroke="rgba(60,228,255,.1)" stroke-width="1"/>';
+    var orderDue={};
+    for(var f=0;f<F.length;f++){for(var q=0;q<F[f].orders.length;q++){orderDue[F[f].orders[q].id]=F[f].orders[q].due;}}
+    for(var g=0;g<GANTT.length;g++){
+      var bar=GANTT[g];
+      if(bar.rider!==riders[i].name) continue;
+      var bx=L+(bar.start/tMax)*W, bw=Math.max(3,((bar.end-bar.start)/tMax)*W);
+      var late=orderDue[bar.order_id]!=null&&bar.end>orderDue[bar.order_id];
+      h+='<rect class="gbar'+(late?' late':'')+'" x="'+bx+'" y="'+(y+2)+'" width="'+bw+
+         '" height="'+(rowH*0.62)+'" rx="3"><title>#'+bar.order_id+' ['+bar.start.toFixed(0)+
+         '→'+bar.end.toFixed(0)+']</title></rect>';
+    }
+  }
+  /* 播放头 */
+  var px=L+(F[cur].t/tMax)*W;
+  h+='<line x1="'+px+'" y1="2" x2="'+px+'" y2="88" stroke="#ffb051" stroke-width="1.6"/>'+
+     '<circle cx="'+px+'" cy="2" r="3.2" fill="#ffb051"/>';
+  h+='<text x="'+L+'" y="91" font-family="Consolas,monospace" font-size="8" fill="#3c5170">0m</text>'+
+     '<text x="'+R+'" y="91" text-anchor="end" font-family="Consolas,monospace" font-size="8" fill="#3c5170">'+
+     tMax.toFixed(0)+'m</text>';
+  $('gantt').innerHTML=h;
+}
+
+/* ---------- KPI 渲染 ---------- */
+var lastKpi={};
+function renderKpi(){
+  var k=F[cur].kpi;
+  for(var i=0;i<KPI_DEFS.length;i++){
+    var d=KPI_DEFS[i], el=$('kv_'+d[0]);
+    if(!el) continue;
+    var v=d[4](k);
+    if(lastKpi[d[0]]!==v){
+      el.textContent=v;
+      if(lastKpi[d[0]]!=null){
+        var p=$('kpi_'+d[0]); p.classList.remove('flash');
+        void p.offsetWidth; p.classList.add('flash');
+      }
+      lastKpi[d[0]]=v;
+    }
+    if(d[0]==='on_time_rate') el.className='val '+(k.on_time_rate>=0.8?'green':k.on_time_rate>=0.5?'amber':'red');
+    if(d[0]==='avg_tardiness') el.className='val '+(k.avg_tardiness<=5?'green':k.avg_tardiness<=20?'amber':'red');
+    if(d[0]==='online_n') el.className='val '+(k.online_n>=4?'cyan':'red');
+  }
+  $('simT').innerHTML=k.t.toFixed(1)+'<span>MIN</span>';
+}
+
+/* ---------- 全帧渲染 ---------- */
+function renderAll(){
+  renderKpi(); renderMap(); renderStream(false); renderTicker(); renderGantt();
+  $('fNow').textContent=cur+1;
+  $('fNow').nextSibling;
+  var scrub=$('scrub');
+  if(scrub){scrub.value=cur; scrub.style.setProperty('--p',(cur/(F.length-1)*100)+'%');}
+}
+
+/* ---------- 播放控制 ---------- */
+var scrubWrap=document.querySelector('.transport');
+var sc=document.createElement('input');
+sc.type='range'; sc.className='scrub'; sc.id='scrub';
+sc.min=0; sc.max=F.length-1; sc.value=0; sc.step=1;
+sc.style.setProperty('--p','0%');
+sc.addEventListener('input',function(){cur=+sc.value;renderAll();});
+scrubWrap.insertBefore(sc,$('.frameinfo'));
+
+function setPlay(on){
+  playing=on;
+  $('btnPlay').textContent=on?'❚❚ 暂停':'▶ 播放';
+  if(timer){clearInterval(timer);timer=null;}
+  if(on){
+    timer=setInterval(function(){
+      cur++;
+      if(cur>=F.length){cur=F.length-1;setPlay(false);}
+      renderAll();
+    }, 900/speed);
+  }
+}
+$('btnPlay').addEventListener('click',function(){setPlay(!playing);});
+$('btnPrev').addEventListener('click',function(){if(cur>0){cur--;renderAll();}});
+$('btnNext').addEventListener('click',function(){if(cur<F.length-1){cur++;renderAll();}});
+$('btnSpeed').addEventListener('click',function(){
+  speed=speed===1?2:speed===2?4:1;
+  $('btnSpeed').textContent=speed+'×';
+  if(playing) setPlay(true);
+});
+$('chipMatch').addEventListener('click',function(){
+  showMatch=!showMatch; this.classList.toggle('on',showMatch); renderMap();
+});
+$('chipDrop').addEventListener('click',function(){
+  showDrop=!showDrop; this.classList.toggle('on',showDrop); renderMap();
+});
+document.addEventListener('keydown',function(e){
+  if(e.key===' '){e.preventDefault();setPlay(!playing);}
+  else if(e.key==='ArrowLeft'&&cur>0){cur--;renderAll();}
+  else if(e.key==='ArrowRight'&&cur<F.length-1){cur++;renderAll();}
+});
+
+/* ---------- 启动 ---------- */
+calcBBox(); applyW(); renderAll();
+setTimeout(function(){
+  var b=$('boot'); b.classList.add('gone');
+  setTimeout(function(){b.style.display='none';},520);
+  setPlay(true);
+},420);
+})();
+</script>
+</body>
+</html>
