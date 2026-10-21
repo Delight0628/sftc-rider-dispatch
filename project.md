@@ -270,6 +270,22 @@
 实现要点：复用 `DeliveryEnv` 仿真或线上回调 → `supervisor` 指标流 → WebSocket/轮询前端；**输出语义 = 每骑手实时订单 list（已与双塔加权）**。  
 源码落点建议：`supervisor/live_dashboard/`（后端）+ 大屏前端；与 `local_dashboard` 训练面板分开。
 
+**已实现（2026-10-21，`supervisor/live_dashboard/`）**：
+
+```bash
+python supervisor/live_dashboard/server.py --port 8788   # 打开 http://127.0.0.1:8788
+```
+
+- `sim_stream.py`：真实数据 episode 帧流（`resolve_env_config` 口径 + 1017 best 权重 16 维边效用），
+  逐决策帧捕获骑手/订单/候选边/派单链路/KPI/甘特/事件；**融合公式 fused = w_p·偏好 + w_u·紧迫(q 归一)**
+  （偏好源 `_willingness_for` 契约口：双塔命中→willingness，未覆盖→属性兜底，帧内标注 pref_src）。
+- `server.py`：HTTP API（`/api/pack` 数据、`/api/regen` 换 seed 重推演）+ HTML 数据注入（单文件可离线复看）。
+- `static/index.html`：「暗夜调度指挥台」大屏——KPI 作战面板 / GEO 态势图（骑手脉冲点+取送点+派单链路流光动画）/
+  双模型融合控制台（w 滑杆实时重排+偏好来源统计）/ 融合派单流（双色融合条 TOP 候选+满载时待派池队列兜底）/
+  事件 ticker / 底部甘特回放（时间轴拖动+播放/倍速，空格/方向键快捷键）。
+- 双塔（王新春侧）接入点：`generate_mock_upstream_candidates`（契约 `{骑手:[{order_id,willingness}]}`），
+  真实上游直接替换该数据源即可，其余链路零改动。
+
 ---
 
 ## 8. 运行 / 云环境约束（virtai / Gemini）
@@ -353,6 +369,7 @@ runs/                             # 远端训练产物（代码同路径）
 
 | 日期 | 变更 |
 |------|------|
+| 2026-10-21 | **Live 调度大屏落地（§7.5 实现）**：`supervisor/live_dashboard/`（sim_stream 帧流引擎 + server HTTP API + 「暗夜调度指挥台」单文件前端）；输出语义=每骑手融合订单 list（fused = w_p·双塔偏好 + w_u·紧迫 q，契约 `upstream_candidates` 可直接换真实上游）；真实数据+1017 权重推演 78 帧验证：完成率 95%、KPI/地图/融合滑杆/派单流/事件/甘特回放全交互通过 |
 | 2026-10-20 | **§5.3 新数据真实口径路线 + §5.4 下阶段计划回写**：整理 1016（合成口径作废）→ 1017（真实口径 best 0.5616@370、≥linear 37/40）完整路线与 rl_train20 验证集独立评估（1016 权重 0.6683 vs linear 0.6209）；制定 6 项行动计划（1017 权重复测→特征工程深化→多城扩展→shaping 复验→生产候选→归档），执行顺序 ①→③(∥②)→④→⑤→⑥；git 清理实验分支后与远程同步（仅 main） |
 | 2026-10-14 | **修复 real_order_pool 无消费者 bug 并重训 shanghai_hybrid_1017**：hybrid 链路把真实订单池透传 env_config 却无消费者（DeliveryEnv 只认 custom_orders），episode 退回合成订单；新增 `resolve_env_config`（池→sample_order_window 窗口注入），collect/evaluate 双侧接线，回归 31/31。诊断坐实：1016 的 eval 基线 L=0.820/edd=0.595 为合成口径，修复后 L=0.531/edd=0.496（真实订单流）。1017 同协议 400/400 完赛（11282s）：**best 0.5616@370**、均值 0.541、**≥linear 37/40**（L 均值 0.531）；产物 `runs/shanghai_hybrid_1017/` 归档，仪表盘并入 11 runs。**1016 及之前 run 的分数为合成订单口径，横向对比须以 1017 起为准** |
 | 2026-10-13 | **接入王新春新数据 rl_hybrid_dispatch_data_20261008.csv（30000 单×72 列、全国 20+ 城、真实 expect_time 口径）并完成上海口径训练 shanghai_hybrid_1016**：特征核查满足要求；修复 `\\N` 空值短路 due 链（`_first_due` epoch 量级校验）、csv.Sniffer 失败（.csv 直读）、跨城坐标拉爆投影（`--real-city` 单城过滤）3 坑；exp-b 16 维方案 400/400 完赛，best **0.8259@40**、0.826 平台 10 次、均值 0.810、**≥linear 11/40**（linear 0.820/edd 0.595），形态与果洛一致→**方案泛化成立但上限形态不变**；产物归档 `runs/shanghai_hybrid_1016/`，仪表盘并入 10 runs；详见 `docs/draft_hybrid_tuning_1011.md` §8 |
