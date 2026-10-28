@@ -193,21 +193,26 @@
 注：验证集与训练池**同源非独立 held-out**（口径如实标注）；该验证用 1016 权重（合成口径训练），
 **1017 权重复测是下一步行动①**。
 
-### 5.4 下阶段计划与下一步具体行动（2026-10-20 制定）
+### 5.4 下阶段计划与下一步具体行动（2026-10-28 更新）
+
+> 🚨 **平台停服硬约束（置顶）**：趋动云公告（2026-08-24 发布）——**2026-11-15 24:00 起**停止算法研发、
+> 离线训练、数据集、代码、镜像服务，**全部资源回收、数据永久删除且不可恢复**。今天 10-28，**仅剩 18 天**。
+> 在此之前必须完成：①全量训练产物/数据集/代码迁出本机；②确认替代算力（否则后续训练无法开展）。
 
 **总体目标**：在真实订单流口径下，把 neural 对 linear 的稳定优势（1017: 37/40、+0.030）放大到
 可上线水平，并完成生产候选替换评估。**唯一已验证有效方向 = 特征工程**（5.2 归因 + 5.3 真实口径复现）。
 
-| # | 行动 | 具体做什么 | 验收标准 |
-|---|------|-----------|---------|
-| ① | **1017 权重验证集复测**（立即） | 用 `runs/shanghai_hybrid_1017/models/checkpoints/edge_net_best.npz` 替换 eval_verify 的 MODEL_NPZ，在 rl_train20 上海 401 单上重跑 20 ep 对拍 | neural 对 linear 差值 ≥ +0.04，复现 37/40 优势；与 1016 权重（0.6683）对比记录 |
-| ② | **验证集多城扩展** | 去掉 `--real-city` 限制或分城跑（北京/深圳/广州…），验证 16 维特征跨城泛化 | ≥3 城对拍 neural 仍超 linear |
-| ③ | **边特征工程深化**（主攻方向） | 在 16 维基础上加：骑手历史准时率、订单时空簇密度、区域运力缺口 | 1017 真实口径 best 0.5616 突破 0.58 |
-| ④ | **学习目标口径调优** | realized_utility 尝试分段 shaping（5.2 exp-a 无增益但当时是合成口径，真实口径下需复验） | 均值 ≥ 0.55 且 ≥linear 不低于 37/40 |
-| ⑤ | **生产候选替换评估** | 1017 best 权重导出 `edge_net_best.npz` + 评估报告，交付双塔融合侧做 A/B | 融合后调度 KPI 不降 |
-| ⑥ | **产物与文档归档** | runs/ 全量备份本机 `training_backup\`；draft §9 订正同步 push GitHub | git 与远端一致 |
+| 优先级 | # | 行动 | 具体做什么 | 验收标准 |
+|--------|---|------|-----------|---------|
+| **P0** | ⓪ | **停服前全量数据迁出**（18 天倒计时） | 服务器 `runs/`（12 个 run：1009-1017）+ 两个 CSV + 交付说明 + 代码，整体打包拉回本机 `training_backup\`；核对 md5/文件数 | 本地逐 run 校验权重与 metrics 齐全；服务器可随时销毁 |
+| **P0** | ① | **1017 权重验证集复测** | `runs/shanghai_hybrid_1017/models/checkpoints/edge_net_best.npz` 替换 eval_verify 的 MODEL_NPZ，rl_train20 上海 401 单、20 ep 对拍 | 对 linear 差值 ≥ +0.04；与 1016 权重（0.6683）对比留档 |
+| **P1** | ③ | **边特征工程深化**（主攻） | 16 维基础上加：骑手历史准时率、订单时空簇密度、区域运力缺口 | 真实口径 best 0.5616 突破 0.58 |
+| **P1** | ② | 验证集多城扩展 | 分城跑北京/深圳/广州，验证跨城泛化 | ≥3 城 neural 仍超 linear |
+| **P2** | ④ | 学习目标口径调优 | realized_utility 分段 shaping（合成口径下无增益，真实口径需复验） | 均值 ≥ 0.55 且 ≥linear ≥ 37/40 |
+| **P2** | ⑤ | 生产候选替换评估 | 1017 best 权重 + 评估报告交付双塔融合侧 A/B | 融合后 KPI 不降 |
+| **P2** | ⑥ | 替代算力落地 | 停服前选定新平台，复现一次 1017 短训（如 50 iters）验证环境可迁移 | 新平台单轮训练跑通 |
 
-**执行顺序**：① → ③（并行②）→ ④ → ⑤ → ⑥。
+**执行顺序**：⓪（立即，与①并行）→ ① → ③（∥②）→ ④ → ⑤ → ⑥。
 **原则**：一切对比以 1017 起真实口径为准；特征工程优先，优化侧（lr/容量/保护）已验证到顶不再投入。
 
 ---
@@ -290,6 +295,9 @@ python supervisor/live_dashboard/server.py --port 8788   # 打开 http://127.0.0
 
 ## 8. 运行 / 云环境约束（virtai / Gemini）
 
+> 🚨 **停服公告**：趋动云 2026-11-15 24:00 起停止算法研发/离线训练/数据集/代码/镜像服务，
+> 资源回收、数据永久删除。**迁移是当前最高优先级**（见 §5.4 ⓪⑥）。
+
 | 事实 | 约束 |
 |------|------|
 | 容器配额 | 以 **cgroup** 为准（勿信 `nproc`/`free` 的宿主机数） |
@@ -299,6 +307,30 @@ python supervisor/live_dashboard/server.py --port 8788   # 打开 http://127.0.0
 | BrokenProcessPool | 多为 idle 杀 worker 的**结果**，不是 OOM（以 dmesg + 日志时序为准） |
 | SSH | 密码易失败；优先网页终端 + JupyterLab 下载；启动用 `nohup` + `PYTHONUNBUFFERED=1` |
 | worker | `--num-parallel-workers` 建议 ≤ cgroup CPU 配额（start_train_remote.sh 自动探测） |
+
+### 8.1 当前实例（2026-10-28 核查）
+
+| 项 | 值 |
+|----|----|
+| 工作台地址 | `https://platform.virtaicloud.com/gemini_web/workspace/space/mczzavdaekmx/project/765563780180459520/jupyter?type=jupyter` |
+| Jupyter 容器 ID | `770472266118127616`（**每次重启变化**） |
+| baseUrl | `/gemini_web/gemini_jupyterlab/~direct.virtaicloud.com~31443~/770472266118127616/` |
+| 算力规格 | B1.gpu.small（GPU 1×6GB / CPU 6 核 / 内存 16GB / 临时存储 20GB） |
+| 代码路径 | `/gemini/code/sftc-rider-dispatch`（HEAD=5066d90，tracked 69，与本地一致） |
+| 环境 | Python 3.11.8 / TF 2.15.0 / numpy 1.26.4 / pandas 2.3.3 / CUDA 可用 |
+| 无关目录 | `/gemini/code/lightfour-git`(23M)、`lightfour-train`(157G)、`data`(空) 属**其他项目**，勿动 |
+
+**容器 ID 获取方法（最可靠，2026-10-28 验证）**：打开工作台页面后，递归遍历嵌套 iframe，
+读内层 `#jupyter-config-data` 的 `baseUrl`——比 `browser_network_requests` 可靠
+（后者抓不到子 frame 请求）。第一层 iframe 是 `gemini_workspace_web` 外壳，Jupyter 在其内部。
+
+### 8.2 服务器操作工具约定
+
+- **所有远端操作统一使用 skill：`d:\user\tc032353\桌面\traeskill\jupyterlab-remote-shell\SKILL.md`**
+  （Contents API 读写 + Terminal WebSocket；不在本地 SSH，不走其他通道）。
+- 上传文本/脚本：`PUT api/contents/<path>` + `format:'text'`；二进制走 base64 文本 + 服务端 `base64 -d`。
+- 下载：页面内 fetch `?content=1` → 本地接收器 POST（禁止本地脚本直连 Jupyter，会拿到登录页 HTML）。
+- 远端工作区被上传文件弄脏后，`git checkout -- .` 清理（**禁用 `git stash -u`**，会吞 `runs/`）。
 
 推荐启动（网页终端）：
 
@@ -369,6 +401,7 @@ runs/                             # 远端训练产物（代码同路径）
 
 | 日期 | 变更 |
 |------|------|
+| 2026-10-28 | **全链路完整性核查 + 停服风险升级为最高优先级**：本地=远程=HEAD `5066d90`（69 tracked，git blob 逐一比对一致，CSV md5 差异仅 CRLF）；远端曾落后 6 提交且缺 `supervisor/live_dashboard/` 大屏代码，已 `git checkout -- .` + `pull --ff-only` 补齐；实例 `770472266118127616` 连通（TF 2.15.0/numpy 1.26.4/pandas 2.3.3/GPU 可用）。新增 §8.1 实例档案 + §8.2 服务器操作工具约定（统一 `jupyterlab-remote-shell` skill）；§5.4 计划重排优先级，新增 P0「停服前全量数据迁出」（趋动云 2026-11-15 24:00 停服，数据永久删除，仅剩 18 天）与 P2「替代算力落地」 |
 | 2026-10-21 | **Live 调度大屏落地（§7.5 实现）**：`supervisor/live_dashboard/`（sim_stream 帧流引擎 + server HTTP API + 「暗夜调度指挥台」单文件前端）；输出语义=每骑手融合订单 list（fused = w_p·双塔偏好 + w_u·紧迫 q，契约 `upstream_candidates` 可直接换真实上游）；真实数据+1017 权重推演 78 帧验证：完成率 95%、KPI/地图/融合滑杆/派单流/事件/甘特回放全交互通过 |
 | 2026-10-20 | **§5.3 新数据真实口径路线 + §5.4 下阶段计划回写**：整理 1016（合成口径作废）→ 1017（真实口径 best 0.5616@370、≥linear 37/40）完整路线与 rl_train20 验证集独立评估（1016 权重 0.6683 vs linear 0.6209）；制定 6 项行动计划（1017 权重复测→特征工程深化→多城扩展→shaping 复验→生产候选→归档），执行顺序 ①→③(∥②)→④→⑤→⑥；git 清理实验分支后与远程同步（仅 main） |
 | 2026-10-14 | **修复 real_order_pool 无消费者 bug 并重训 shanghai_hybrid_1017**：hybrid 链路把真实订单池透传 env_config 却无消费者（DeliveryEnv 只认 custom_orders），episode 退回合成订单；新增 `resolve_env_config`（池→sample_order_window 窗口注入），collect/evaluate 双侧接线，回归 31/31。诊断坐实：1016 的 eval 基线 L=0.820/edd=0.595 为合成口径，修复后 L=0.531/edd=0.496（真实订单流）。1017 同协议 400/400 完赛（11282s）：**best 0.5616@370**、均值 0.541、**≥linear 37/40**（L 均值 0.531）；产物 `runs/shanghai_hybrid_1017/` 归档，仪表盘并入 11 runs。**1016 及之前 run 的分数为合成订单口径，横向对比须以 1017 起为准** |
